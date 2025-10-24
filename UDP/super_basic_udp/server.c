@@ -8,7 +8,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-
+#include <poll.h>
 
 #define MYPORT "4950"
 #define MAXBUFLEN 100
@@ -27,7 +27,7 @@ int main(void) {
     struct addrinfo hints, *servinfo, *p;
     int rv;
     int numbytes;
-    struct sockaddr_storage client_addr;
+    struct sockaddr_storage their_addr;
     char buf[MAXBUFLEN];
     socklen_t addr_len;
     char s[INET6_ADDRSTRLEN];
