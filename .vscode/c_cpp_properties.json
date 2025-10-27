@@ -1,0 +1,31 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/infinity/src",
+                "${workspaceFolder}/infinity/release/include",
+                "${workspaceFolder}/infinity/src/infinity"
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/g++",
+            "cStandard": "c11",
+            "cppStandard": "c++11",
+            "intelliSenseMode": "linux-gcc-x64",
+            "compilerArgs": [
+                "-O3",
+                "-std=c++0x"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/infinity/src",
+                    "${workspaceFolder}/infinity/release/include"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            }
+        }
+    ],
+    "version": 4
+}
+
+
