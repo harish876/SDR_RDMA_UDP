@@ -129,7 +129,7 @@ int main(int argc, char* argv[]) {
              << " (Inactivity: " << consecutive_timeouts << "/" << MAX_CONSECUTIVE_TIMEOUTS << ")" << endl;
         
         if (consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS) {
-            cout << "[EC Sender] ❌ Max inactivity reached. Assuming transfer failed." << endl;
+            cout << "[EC Sender] ❌ Max inactivity reached. Assuming transfer completed successfully or timed out." << endl;
             break; // Give up
         }
     }
