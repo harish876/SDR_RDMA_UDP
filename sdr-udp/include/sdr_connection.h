@@ -127,12 +127,21 @@ inline MessageContext* ConnectionContext::allocate_message_slot(uint32_t msg_id,
     std::lock_guard<std::mutex> lock(msg_table_mutex_);
     
     auto& msg_ptr = msg_table_[msg_id];
-    if (msg_ptr && msg_ptr->state != MessageState::NULL_STATE) {
-        // Slot already in use (could be late packet from previous generation)
+    // Allow reuse if slot is NULL or COMPLETED (with same or newer generation)
+    // Reject if slot is ACTIVE (transfer in progress)
+    if (msg_ptr && msg_ptr->state == MessageState::ACTIVE) {
+        // Slot is actively receiving - cannot reuse
         return nullptr;
     }
     
-    // Allocate new message context
+    // If slot exists but is COMPLETED and generation matches/old, or slot doesn't exist,
+    // we can reuse it
+    if (msg_ptr && msg_ptr->state == MessageState::COMPLETED && msg_ptr->generation >= generation) {
+        // Late packet protection: don't overwrite newer generation with older one
+        return nullptr;
+    }
+    
+    // Allocate new message context (or reuse existing slot)
     msg_ptr = std::make_unique<MessageContext>();
     msg_ptr->msg_id = msg_id;
     msg_ptr->generation = generation;

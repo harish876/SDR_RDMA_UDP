@@ -94,7 +94,9 @@ int main(int argc, char* argv[]) {
     // Allocate receive buffer
     std::vector<uint8_t> recv_buffer(message_size);
     
-    // Post receive
+    std::cout << "[Receiver] Ready to receive transfer..." << std::endl;
+    
+    // Post receive for single transfer
     SDRRecvHandle* recv_handle = nullptr;
     if (sdr_recv_post(conn, recv_buffer.data(), message_size, &recv_handle) != 0) {
         std::cerr << "[Receiver] Failed to post receive" << std::endl;
@@ -110,7 +112,8 @@ int main(int argc, char* argv[]) {
     size_t chunks_received = 0;
     size_t total_chunks = 0;
     size_t iterations = 0;
-    const size_t MAX_ITERATIONS = 1000000; // Prevent infinite loop
+    const size_t MAX_ITERATIONS = 1000000;
+    const std::chrono::seconds TIMEOUT_SECONDS(30); // 30 second timeout if no progress
     
     const uint8_t* chunk_bitmap = nullptr;
     size_t bitmap_len = 0;
@@ -130,54 +133,48 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // Progress display function - shows chunk-by-chunk packet progress
+    // Progress display function - shows a nice progress bar
     auto display_progress = [&]() {
-        if (!recv_handle->msg_ctx || !recv_handle->msg_ctx->backend_bitmap) {
+        if (!recv_handle->msg_ctx || total_chunks == 0) {
             return;
         }
         
-        const auto& backend_bitmap = recv_handle->msg_ctx->backend_bitmap;
-        uint32_t total_packets = backend_bitmap->get_total_packets();
-        uint16_t packets_per_chunk = backend_bitmap->get_packets_per_chunk();
+        // Calculate percentage
+        double percentage = (static_cast<double>(chunks_received) / static_cast<double>(total_chunks)) * 100.0;
         
-        // Clear screen and move to top (simple approach for small number of chunks)
-        if (total_chunks <= 20) {
-            // Clear previous output
-            std::cout << "\033[2J\033[H"; // Clear screen and move cursor to top
-            
-            // Display header
-            std::cout << "[Receiver] Packet Progress (1=received, 0=missing):\n";
-            std::cout << "Chunks: " << chunks_received << "/" << total_chunks << "\n\n";
-            
-            // Display chunk progress
-            for (uint32_t chunk_id = 0; chunk_id < total_chunks; ++chunk_id) {
-                std::cout << "C" << std::setw(3) << std::setfill('0') << (chunk_id + 1) << " - ";
-                
-                uint32_t chunk_start_packet = chunk_id * packets_per_chunk;
-                uint32_t chunk_end_packet = std::min(chunk_start_packet + packets_per_chunk, total_packets);
-                
-                for (uint32_t pkt = chunk_start_packet; pkt < chunk_end_packet; ++pkt) {
-                    bool received = backend_bitmap->is_packet_received(pkt);
-                    std::cout << (received ? "1" : "0") << " ";
-                }
-                
-                // Show completion status
-                bool chunk_complete = backend_bitmap->is_chunk_complete(chunk_id);
-                std::cout << " [" << (chunk_complete ? "OK" : "--") << "]";
-                std::cout << std::endl;
+        // Progress bar width (in characters)
+        const size_t bar_width = 50;
+        
+        // Calculate how many characters should be filled
+        size_t filled = static_cast<size_t>((percentage / 100.0) * bar_width);
+        if (filled > bar_width) filled = bar_width;
+        
+        // Clear the line and move to beginning
+        std::cout << "\r\033[K";
+        
+        // Build progress bar
+        std::cout << "[Receiver] [";
+        for (size_t i = 0; i < bar_width; ++i) {
+            if (i < filled) {
+                std::cout << "=";
+            } else {
+                std::cout << "-";
             }
-            std::cout << std::flush;
-        } else {
-            // For many chunks, show summary only
-            std::cout << "\r\033[K[Receiver] Chunks: " << chunks_received << "/" << total_chunks << std::flush;
         }
+        
+        std::cout << "] " << std::fixed << std::setprecision(1) << percentage << "% "
+                  << "(" << chunks_received << "/" << total_chunks << ")" << std::flush;
     };
     
-    bool progress_shown = false;
-    size_t last_display_iteration = 0;
+    size_t last_chunks_received = 0;
+    auto last_progress_time = std::chrono::steady_clock::now();
+    bool transfer_incomplete = false;
+    size_t display_update_counter = 0;
     
+    // Wait for all chunks to be received
     while (iterations < MAX_ITERATIONS) {
         iterations++;
+        display_update_counter++;
         
         if (sdr_recv_bitmap_get(recv_handle, &chunk_bitmap, &bitmap_len) != 0) {
             std::cerr << "[Receiver] Failed to get bitmap" << std::endl;
@@ -189,19 +186,39 @@ int main(int argc, char* argv[]) {
             chunks_received = recv_handle->msg_ctx->frontend_bitmap->get_total_chunks_completed();
             total_chunks = recv_handle->msg_ctx->total_chunks;
             
-            // Display progress bar (update every 5 iterations to reduce flicker)
-            if (iterations - last_display_iteration >= 5) {
+            // Check for progress - if chunks increased, update last progress time and display
+            bool chunks_changed = (chunks_received > last_chunks_received);
+            if (chunks_changed) {
+                last_chunks_received = chunks_received;
+                last_progress_time = std::chrono::steady_clock::now();
+                // Update display immediately when chunks change
                 display_progress();
-                progress_shown = true;
-                last_display_iteration = iterations;
+            } else if (display_update_counter >= 50) {
+                // Also update display periodically (every 50 iterations ≈ 500ms) even if no change
+                display_progress();
+                display_update_counter = 0;
+            }
+            
+            // Check timeout - if no progress for TIMEOUT_SECONDS, consider transfer incomplete
+            auto now = std::chrono::steady_clock::now();
+            auto time_since_progress = std::chrono::duration_cast<std::chrono::seconds>(
+                now - last_progress_time).count();
+            
+            if (chunks_received > 0 && time_since_progress >= TIMEOUT_SECONDS.count() && 
+                chunks_received < total_chunks) {
+                std::cout << "\n[Receiver] Timeout: No progress for " << TIMEOUT_SECONDS.count() 
+                          << " seconds. Transfer incomplete (" << chunks_received 
+                          << "/" << total_chunks << " chunks received)." << std::endl;
+                transfer_incomplete = true;
+                break;
             }
         }
         
         // Check if all chunks received
         if (total_chunks > 0 && chunks_received >= total_chunks) {
-            // Final display
+            // Final progress display (100%)
             display_progress();
-            std::cout << "\n[Receiver] All chunks received!" << std::endl;
+            std::cout << "\n[Receiver] Transfer completed!" << std::endl;
             break;
         }
         
@@ -209,50 +226,46 @@ int main(int argc, char* argv[]) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     
-    if (progress_shown && total_chunks <= 20) {
-        std::cout << std::endl; // Final newline
-    }
-    
     if (iterations >= MAX_ITERATIONS) {
         std::cerr << "[Receiver] Timeout: Reached maximum iterations" << std::endl;
         std::cerr << "[Receiver] Final status: " << chunks_received << "/" << total_chunks << " chunks" << std::endl;
+        transfer_incomplete = true;
+    } else if (total_chunks > 0 && chunks_received >= total_chunks) {
+        auto end_time = std::chrono::steady_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        std::cout << "[Receiver] Transfer completed in " << duration.count() << " ms" << std::endl;
     }
     
-    auto end_time = std::chrono::steady_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    if (transfer_incomplete) {
+        std::cerr << "[Receiver] Transfer was incomplete. Missing " << (total_chunks - chunks_received) 
+                  << " chunks. This may indicate packet loss or sender disconnect." << std::endl;
+    }
     
-    std::cout << "[Receiver] Transfer completed in " << duration.count() << " ms" << std::endl;
-    
-    // Verify data (simple check)
-    bool data_valid = true;
-    size_t first_mismatch = SIZE_MAX;
-    for (size_t i = 0; i < message_size && i < 1024; ++i) {
-        uint8_t expected = static_cast<uint8_t>(i % 256);
-        uint8_t actual = recv_buffer[i];
-        if (actual != expected) {
-            if (first_mismatch == SIZE_MAX) {
-                first_mismatch = i;
-                std::cerr << "[Receiver] Data mismatch at offset " << i 
-                          << ": expected 0x" << std::hex << static_cast<int>(expected)
-                          << ", got 0x" << static_cast<int>(actual) << std::dec << std::endl;
+    // Verify data (simple check) - only for completed transfers
+    if (total_chunks > 0 && chunks_received >= total_chunks) {
+        bool data_valid = true;
+        size_t first_mismatch = SIZE_MAX;
+        for (size_t i = 0; i < message_size && i < 1024; ++i) {
+            uint8_t expected = static_cast<uint8_t>(i % 256);
+            uint8_t actual = recv_buffer[i];
+            if (actual != expected) {
+                if (first_mismatch == SIZE_MAX) {
+                    first_mismatch = i;
+                    std::cerr << "[Receiver] Data mismatch at offset " << i 
+                              << ": expected 0x" << std::hex << static_cast<int>(expected)
+                              << ", got 0x" << static_cast<int>(actual) << std::dec << std::endl;
+                }
+                data_valid = false;
+                if (i - first_mismatch > 10) break;
             }
-            data_valid = false;
-            // Don't break immediately, show a few mismatches
-            if (i - first_mismatch > 10) break;
         }
-    }
-    
-    if (data_valid) {
-        std::cout << "[Receiver] Data verification: PASSED" << std::endl;
-    } else {
-        std::cout << "[Receiver] Data verification: FAILED (first mismatch at offset " 
-                  << first_mismatch << ")" << std::endl;
-        // Show first few bytes for debugging
-        std::cout << "[Receiver] First 16 bytes received: ";
-        for (size_t i = 0; i < std::min(static_cast<size_t>(16), message_size); ++i) {
-            std::cout << std::hex << static_cast<int>(recv_buffer[i]) << " ";
+        
+        if (data_valid) {
+            std::cout << "[Receiver] Data verification: PASSED" << std::endl;
+        } else {
+            std::cout << "[Receiver] Data verification: FAILED (first mismatch at offset " 
+                      << first_mismatch << ")" << std::endl;
         }
-        std::cout << std::dec << std::endl;
     }
     
     // Complete receive (stops polling threads)
@@ -263,6 +276,8 @@ int main(int argc, char* argv[]) {
     
     // Cleanup
     delete recv_handle;
+    
+    // Final cleanup
     sdr_disconnect(conn);
     sdr_ctx_destroy(ctx);
     

@@ -192,10 +192,20 @@ int sdr_recv_post(SDRConnection* conn, void* buffer, size_t length, SDRRecvHandl
               << ", total_chunks=" << total_chunks << std::endl;
     
     // Allocate message slot
-    uint32_t generation = params.transfer_id; // Use transfer_id as generation for now
+    // Use transfer_id as generation - increment it to allow slot reuse
+    // For receiver, we'll use a simple counter that increments
+    static uint32_t receiver_generation_counter = 1;
+    uint32_t generation = params.transfer_id;
+    if (generation == 0 || generation == 1) {
+        // Use our own counter for receiver to ensure uniqueness
+        generation = receiver_generation_counter++;
+    }
+    
     MessageContext* msg_ctx = conn->connection_ctx->allocate_message_slot(msg_id, generation);
     
     if (!msg_ctx) {
+        std::cerr << "[SDR API] Failed to allocate message slot (msg_id=" << msg_id 
+                  << ", generation=" << generation << ")" << std::endl;
         return -1;
     }
     

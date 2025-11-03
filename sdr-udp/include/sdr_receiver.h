@@ -230,12 +230,8 @@ inline void UDPReceiver::process_packet(const SDRPacketHeader& header,
         
         // Update backend packet bitmap
         if (msg_ctx->backend_bitmap) {
-            bool newly_received = msg_ctx->backend_bitmap->set_packet_received(header.packet_offset);
-            if (newly_received) {
-                std::cout << "\n[UDP Receiver] Received packet " << header.packet_offset 
-                          << " (chunk " << header.get_chunk_id() 
-                          << ", payload_len: " << payload_len << ")" << std::endl;
-            }
+            msg_ctx->backend_bitmap->set_packet_received(header.packet_offset);
+            // Removed verbose logging - progress is shown via chunk bitmap display
         }
 }
 
@@ -256,12 +252,7 @@ inline void UDPReceiver::write_packet_to_buffer(MessageContext* msg_ctx,
     
     size_t buffer_offset = static_cast<size_t>(packet_offset) * static_cast<size_t>(mtu_bytes);
     
-    // Debug output
-    std::cout << "[UDP Receiver] Writing packet " << packet_offset 
-              << ": offset=" << buffer_offset 
-              << ", payload_len=" << payload_len 
-              << ", buffer_size=" << msg_ctx->buffer_size 
-              << ", mtu_bytes=" << mtu_bytes << std::endl;
+    // Removed verbose debug output - progress is shown via chunk bitmap display
     
     // Check bounds
     if (buffer_offset >= msg_ctx->buffer_size) {
@@ -284,8 +275,7 @@ inline void UDPReceiver::write_packet_to_buffer(MessageContext* msg_ctx,
     // Write payload to buffer
     std::memcpy(static_cast<uint8_t*>(msg_ctx->buffer) + buffer_offset, payload, payload_len);
     
-    std::cout << "[UDP Receiver] Wrote " << payload_len << " bytes to buffer at offset " 
-              << buffer_offset << std::endl;
+    // Removed verbose logging - progress is shown via chunk bitmap display
 }
 
 } // namespace sdr
