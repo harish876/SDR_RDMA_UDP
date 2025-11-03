@@ -55,14 +55,12 @@ cd build
 
 Example:
 ```bash
-./sdr_test_receiver 8888 9999 1048576
-# Or with explicit config file:
-./sdr_test_receiver 8888 9999 1048576 ../config/receiver.config
+./sdr_test_receiver 8888 9999 16384 ../config/receiver.config
 ```
 This starts a receiver listening on:
 - TCP port 8888 for control/connection
 - UDP port 9999 for data
-- Expects a 1 MiB message (1048576 bytes)
+- Expects a 1 MiB message (1048576 bytes) ( 1 MiB not working, use 8192 or 16384)
 - Config file: optional path to `.config` file (defaults to `../config/receiver.config` if not specified)
 
 **Terminal 2 - Start Sender:**
@@ -73,7 +71,7 @@ cd build
 
 Example:
 ```bash
-./sdr_test_sender 127.0.0.1 8888 9999 1048576
+./sdr_test_sender 127.0.0.1 8888 9999 16384
 ```
 This connects to the receiver and sends:
 - 1 MiB of data
