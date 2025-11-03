@@ -105,7 +105,7 @@ int main(int argc, char* argv[]) {
     size_t total_chunks = 0;
     size_t iterations = 0;
     const size_t MAX_ITERATIONS = 1000000;
-    const std::chrono::seconds TIMEOUT_SECONDS(30); // 30 second timeout if no progress
+    const std::chrono::seconds TIMEOUT_SECONDS(30);
     
     const uint8_t* chunk_bitmap = nullptr;
     size_t bitmap_len = 0;
@@ -125,7 +125,6 @@ int main(int argc, char* argv[]) {
     }
     
 
-    // Track previous number of displayed lines for proper cursor movement
     size_t prev_display_lines = 0;
     
     auto display_progress = [&]() {
@@ -133,13 +132,11 @@ int main(int argc, char* argv[]) {
             return;
         }
         
-        // Clear previous display (move up and clear lines)
         for (size_t i = 0; i < prev_display_lines; ++i) {
-            std::cout << "\033[A\033[K";  // Move up one line and clear it
+            std::cout << "\033[A\033[K"; 
         }
-        std::cout << "\r\033[K";  // Clear current line
+        std::cout << "\r\033[K"; 
         
-        // Overall message progress
         double percentage = (static_cast<double>(chunks_received) / static_cast<double>(total_chunks)) * 100.0;
         const size_t bar_width = 50;
         size_t filled = static_cast<size_t>((percentage / 100.0) * bar_width);
@@ -156,7 +153,6 @@ int main(int argc, char* argv[]) {
         std::cout << "] " << std::fixed << std::setprecision(1) << percentage << "% "
                   << "(" << chunks_received << "/" << total_chunks << " chunks)\n";
         
-        // Per-chunk packet progress
         uint16_t packets_per_chunk = recv_handle->msg_ctx->packets_per_chunk;
         if (packets_per_chunk == 0) {
             prev_display_lines = 1;
@@ -164,9 +160,8 @@ int main(int argc, char* argv[]) {
             return;
         }
         
-        // Determine window to display (cycle through windows of 15)
         const size_t window_size = 15;
-        static size_t window_index = 0; // advances each refresh
+        static size_t window_index = 0;
         size_t num_windows = (total_chunks + window_size - 1) / window_size;
         size_t start_chunk = (num_windows > 0) ? (window_index % num_windows) * window_size : 0;
         size_t end_chunk = std::min(start_chunk + window_size, total_chunks);
@@ -188,7 +183,6 @@ int main(int argc, char* argv[]) {
             size_t chunk_filled = static_cast<size_t>((chunk_pct / 100.0) * chunk_bar_width);
             if (chunk_filled > chunk_bar_width) chunk_filled = chunk_bar_width;
             
-            // Use different characters for completed vs in-progress chunks
             char fill_char = chunk_complete ? '#' : '=';
             char empty_char = '-';
             
@@ -209,9 +203,8 @@ int main(int argc, char* argv[]) {
             std::cout << "\n";
         }
         
-        prev_display_lines = 1 + 1 + (end_chunk - start_chunk);  // Header + title + chunks
+        prev_display_lines = 1 + 1 + (end_chunk - start_chunk); 
         
-        // Advance window for next refresh
         window_index++;
         std::cout << std::flush;
     };
