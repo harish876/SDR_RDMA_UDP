@@ -7,10 +7,12 @@ namespace sdr {
 
 // Message types for control plane
 enum class ControlMsgType : uint8_t {
-    OFFER = 0,      // Sender proposes connection parameters
-    CTS = 1,        // Clear to Send (receiver ready)
-    ACCEPT = 2,     // Receiver accepts offer parameters
-    REJECT = 3      // Receiver rejects offer
+    OFFER = 0,          // Sender proposes connection parameters
+    CTS = 1,            // Clear to Send (receiver ready)
+    ACCEPT = 2,         // Receiver accepts offer parameters
+    REJECT = 3,         // Receiver rejects offer
+    COMPLETE_ACK = 4,   // Receiver acknowledges transfer completion
+    INCOMPLETE_NACK = 5 // Receiver indicates transfer incomplete (timeout/packet loss)
 };
 
 // Connection parameters structure (used in OFFER and CTS)
@@ -53,22 +55,16 @@ public:
     TCPControlServer();
     ~TCPControlServer();
     
-    // Start listening on TCP port
     bool start_listening(uint16_t port);
     
-    // Accept a connection (blocking)
     bool accept_connection();
     
-    // Wait for and receive a control message
     bool receive_message(ControlMessage& msg);
     
-    // Send a control message
     bool send_message(const ControlMessage& msg);
     
-    // Close current connection
     void close_connection();
     
-    // Stop listening
     void stop();
     
     uint16_t get_listen_port() const { return listen_port_; }
@@ -87,16 +83,12 @@ public:
     TCPControlClient();
     ~TCPControlClient();
     
-    // Connect to TCP server
     bool connect_to_server(const std::string& server_ip, uint16_t server_port);
     
-    // Send a control message
     bool send_message(const ControlMessage& msg);
-    
-    // Receive a control message (blocking)
+
     bool receive_message(ControlMessage& msg);
     
-    // Close connection
     void disconnect();
     
     bool is_connected() const { return is_connected_; }
@@ -106,7 +98,6 @@ private:
     bool is_connected_;
 };
 
-// Connection ID allocator (simple counter-based for now)
 class ConnectionIDAllocator {
 public:
     static uint32_t allocate() {

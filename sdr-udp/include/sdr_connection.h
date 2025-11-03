@@ -51,18 +51,14 @@ public:
     ConnectionContext();
     ~ConnectionContext();
     
-    // Initialize connection with parameters
     bool initialize(uint32_t connection_id, const ConnectionParams& params);
     
-    // Message table management
     MessageContext* allocate_message_slot(uint32_t msg_id, uint32_t generation);
     MessageContext* get_message(uint32_t msg_id) const;
     void release_message(uint32_t msg_id);
-    
-    // Mark message as completed (for late packet protection)
+
     void complete_message(uint32_t msg_id);
     
-    // TCP/UDP socket management
     void set_tcp_socket(int tcp_fd) { tcp_socket_fd_ = tcp_fd; }
     void set_udp_socket(int udp_fd) { udp_socket_fd_ = udp_fd; }
     int get_tcp_socket() const { return tcp_socket_fd_; }
@@ -71,10 +67,8 @@ public:
     uint32_t get_connection_id() const { return connection_id_; }
     const ConnectionParams& get_params() const { return params_; }
     
-    // Check if connection is initialized
     bool is_initialized() const { return is_initialized_; }
     
-    // Helper: calculate bitmap sizes from message parameters
     void calculate_bitmap_sizes(size_t total_bytes, uint32_t mtu_bytes,
                                uint16_t packets_per_chunk,
                                size_t& total_packets, size_t& total_chunks);
@@ -94,7 +88,7 @@ private:
     int udp_socket_fd_;
 };
 
-// Implementation
+
 inline ConnectionContext::ConnectionContext()
     : connection_id_(0), is_initialized_(false),
       tcp_socket_fd_(-1), udp_socket_fd_(-1) {
@@ -102,7 +96,6 @@ inline ConnectionContext::ConnectionContext()
 }
 
 inline ConnectionContext::~ConnectionContext() {
-    // Release all messages
     std::lock_guard<std::mutex> lock(msg_table_mutex_);
     for (auto& msg : msg_table_) {
         msg.reset();
@@ -130,18 +123,15 @@ inline MessageContext* ConnectionContext::allocate_message_slot(uint32_t msg_id,
     // Allow reuse if slot is NULL or COMPLETED (with same or newer generation)
     // Reject if slot is ACTIVE (transfer in progress)
     if (msg_ptr && msg_ptr->state == MessageState::ACTIVE) {
-        // Slot is actively receiving - cannot reuse
         return nullptr;
     }
     
     // If slot exists but is COMPLETED and generation matches/old, or slot doesn't exist,
     // we can reuse it
     if (msg_ptr && msg_ptr->state == MessageState::COMPLETED && msg_ptr->generation >= generation) {
-        // Late packet protection: don't overwrite newer generation with older one
         return nullptr;
     }
     
-    // Allocate new message context (or reuse existing slot)
     msg_ptr = std::make_unique<MessageContext>();
     msg_ptr->msg_id = msg_id;
     msg_ptr->generation = generation;
@@ -185,7 +175,7 @@ inline void ConnectionContext::complete_message(uint32_t msg_id) {
     
     if (msg_ptr) {
         msg_ptr->state = MessageState::COMPLETED;
-        // Note: In production, we'd set buffer to NULL memory key here
+        // TODO - Note: In production, we'd set buffer to NULL memory key here
         // For UDP, we just mark as completed
     }
 }
@@ -199,7 +189,6 @@ inline void ConnectionContext::calculate_bitmap_sizes(size_t total_bytes, uint32
         return;
     }
     
-    // Calculate total packets (ceiling division)
     total_packets = (total_bytes + mtu_bytes - 1) / mtu_bytes;
     
     // Calculate total chunks (ceiling division)

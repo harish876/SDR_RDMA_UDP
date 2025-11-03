@@ -26,14 +26,12 @@ int main(int argc, char* argv[]) {
     std::cout << "[Sender] UDP port: " << udp_port << std::endl;
     std::cout << "[Sender] Message size: " << message_size << " bytes" << std::endl;
     
-    // Create SDR context
     SDRContext* ctx = sdr_ctx_create("sender");
     if (!ctx) {
         std::cerr << "[Sender] Failed to create SDR context" << std::endl;
         return 1;
     }
     
-    // Connect to receiver
     SDRConnection* conn = sdr_connect(ctx, server_ip, tcp_port);
     if (!conn) {
         std::cerr << "[Sender] Failed to connect" << std::endl;
@@ -43,13 +41,11 @@ int main(int argc, char* argv[]) {
     
     std::cout << "[Sender] Connected!" << std::endl;
     
-    // Prepare send buffer
     std::vector<uint8_t> send_buffer(message_size);
     for (size_t i = 0; i < message_size; ++i) {
         send_buffer[i] = static_cast<uint8_t>(i % 256);
     }
     
-    // Send message (one-shot)
     std::cout << "[Sender] Sending message..." << std::endl;
     auto start_time = std::chrono::steady_clock::now();
     
@@ -61,7 +57,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // Poll for completion
     sdr_send_poll(send_handle);
     
     auto end_time = std::chrono::steady_clock::now();
@@ -70,7 +65,6 @@ int main(int argc, char* argv[]) {
     std::cout << "[Sender] Sent " << send_handle->packets_sent << " packets in " 
               << duration.count() << " ms" << std::endl;
     
-    // Cleanup
     delete send_handle;
     sdr_disconnect(conn);
     sdr_ctx_destroy(ctx);

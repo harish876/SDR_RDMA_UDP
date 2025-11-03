@@ -26,13 +26,10 @@ public:
     UDPReceiver(std::shared_ptr<ConnectionContext> connection);
     ~UDPReceiver();
     
-    // Start receiver thread
     bool start(uint16_t udp_port);
     
-    // Stop receiver thread
     void stop();
     
-    // Check if receiver is running
     bool is_running() const { return is_running_.load(); }
     
 private:
@@ -43,13 +40,10 @@ private:
     int udp_socket_fd_;
     uint16_t udp_port_;
     
-    // Receiver thread function
     void receiver_thread_func();
     
-    // Process incoming packet
     void process_packet(const SDRPacketHeader& header, const uint8_t* payload, size_t payload_len);
     
-    // Write packet payload to buffer
     void write_packet_to_buffer(MessageContext* msg_ctx, uint32_t packet_offset,
                                 const uint8_t* payload, size_t payload_len);
 };
@@ -83,6 +77,18 @@ inline bool UDPReceiver::start(uint16_t udp_port) {
         close(udp_socket_fd_);
         udp_socket_fd_ = -1;
         return false;
+    }
+    
+    // Default is usually ~200KB, increase to 64MB for large transfers
+    int recv_buf_size = 64 * 1024 * 1024; // 64 MB
+    if (setsockopt(udp_socket_fd_, SOL_SOCKET, SO_RCVBUF, &recv_buf_size, sizeof(recv_buf_size)) < 0) {
+        std::cerr << "[UDP Receiver] Warning: Failed to set SO_RCVBUF: " << strerror(errno) << std::endl;
+    } else {
+        int actual_buf_size = 0;
+        socklen_t len = sizeof(actual_buf_size);
+        if (getsockopt(udp_socket_fd_, SOL_SOCKET, SO_RCVBUF, &actual_buf_size, &len) == 0) {
+            std::cout << "[UDP Receiver] UDP receive buffer size: " << (actual_buf_size / 1024) << " KB" << std::endl;
+        }
     }
     
     // Bind to port

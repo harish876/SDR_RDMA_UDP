@@ -3,6 +3,8 @@
 #include <iostream>
 #include <cstring>
 #include <algorithm>
+#include <thread>
+#include <chrono>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -64,7 +66,6 @@ SDRConnection* sdr_connect(SDRContext* ctx, const char* server_ip, uint16_t tcp_
         return nullptr;
     }
     
-    // Create connection context
     uint32_t conn_id = ConnectionIDAllocator::allocate();
     ConnectionParams params;
     std::memset(&params, 0, sizeof(params));
@@ -104,13 +105,11 @@ void sdr_disconnect(SDRConnection* conn) {
     delete conn;
 }
 
-// Connection parameter configuration
 int sdr_set_params(SDRConnection* conn, const ConnectionParams* params) {
     if (!conn || !params) {
         return -1;
     }
     
-    // Update connection context with provided params
     conn->connection_ctx->initialize(conn->connection_ctx->get_connection_id(), *params);
     
     return 0;
@@ -232,6 +231,7 @@ int sdr_recv_post(SDRConnection* conn, void* buffer, size_t length, SDRRecvHandl
     recv_handle->msg_ctx = std::shared_ptr<MessageContext>(msg_ctx, [](MessageContext*) {}); // Non-owning
     recv_handle->user_buffer = buffer;
     recv_handle->buffer_size = length;
+    recv_handle->conn = conn;  // Store connection reference for ACK
     *handle = recv_handle;
     
     // Start UDP receiver if not already started
@@ -272,11 +272,9 @@ int sdr_recv_bitmap_get(SDRRecvHandle* handle, const uint8_t** bitmap, size_t* l
         return -1;
     }
     
-    // Get chunk bitmap
     const std::atomic<uint64_t>* chunk_bitmap = handle->msg_ctx->frontend_bitmap->get_chunk_bitmap();
     uint32_t num_words = handle->msg_ctx->frontend_bitmap->get_chunk_bitmap_size();
     
-    // Calculate total size in bytes
     *len = num_words * sizeof(uint64_t);
     *bitmap = reinterpret_cast<const uint8_t*>(chunk_bitmap);
     
@@ -288,28 +286,51 @@ int sdr_recv_complete(SDRRecvHandle* handle) {
         return -1;
     }
     
-    // Stop frontend polling first (this joins the thread)
     if (handle->msg_ctx->frontend_bitmap) {
         handle->msg_ctx->frontend_bitmap->stop_polling();
     }
     
-    // Mark message as completed (after polling is stopped to avoid race)
+    // Check if transfer is actually complete before sending ACK
+    bool is_complete = false;
+    if (handle->msg_ctx->frontend_bitmap) {
+        uint32_t chunks_received = handle->msg_ctx->frontend_bitmap->get_total_chunks_completed();
+        uint32_t total_chunks = handle->msg_ctx->total_chunks;
+        is_complete = (total_chunks > 0 && chunks_received >= total_chunks);
+    }
+    
     handle->msg_ctx->state = MessageState::COMPLETED;
+    
+    // Send completion ACK or NACK to sender
+    if (handle->conn && handle->conn->is_receiver && handle->conn->tcp_server) {
+        ControlMessage ack_msg;
+        ack_msg.magic = ControlMessage::MAGIC_VALUE;
+        ack_msg.msg_type = is_complete ? ControlMsgType::COMPLETE_ACK : ControlMsgType::INCOMPLETE_NACK;
+        ack_msg.connection_id = handle->conn->connection_ctx->get_connection_id();
+        std::memset(&ack_msg.params, 0, sizeof(ack_msg.params));
+        
+        if (handle->conn->tcp_server->send_message(ack_msg)) {
+            if (is_complete) {
+                std::cout << "[SDR API] Sent completion ACK to sender" << std::endl;
+            } else {
+                std::cout << "[SDR API] Sent incomplete NACK to sender (transfer incomplete)" << std::endl;
+            }
+        } else {
+            std::cerr << "[SDR API] Failed to send completion message" << std::endl;
+        }
+    }
     
     return 0;
 }
 
-// Send operations (one-shot)
 int sdr_send_post(SDRConnection* conn, const void* buffer, size_t length, SDRSendHandle** handle) {
     if (!conn || !buffer || length == 0 || !handle) {
         return -1;
     }
     
     if (conn->is_receiver) {
-        return -1; // Only sender can send
+        return -1;
     }
     
-    // Wait for CTS from receiver
     if (!conn->tcp_client || !conn->tcp_client->is_connected()) {
         return -1;
     }
@@ -325,10 +346,8 @@ int sdr_send_post(SDRConnection* conn, const void* buffer, size_t length, SDRSen
         return -1;
     }
     
-    // Update connection parameters from CTS
     conn->connection_ctx->initialize(cts_msg.connection_id, cts_msg.params);
     
-    // Validate connection parameters
     if (cts_msg.params.mtu_bytes == 0) {
         std::cerr << "[SDR API] Error: MTU bytes is zero in CTS message" << std::endl;
         return -1;
@@ -338,26 +357,23 @@ int sdr_send_post(SDRConnection* conn, const void* buffer, size_t length, SDRSen
         return -1;
     }
     
-    // Allocate message ID (for sender tracking)
     uint32_t msg_id = 0; // TODO: Proper allocation
     
-    // Create send handle
     auto* send_handle = new SDRSendHandle();
     send_handle->msg_id = msg_id;
     send_handle->connection_ctx = conn->connection_ctx;
     send_handle->user_buffer = buffer;
     send_handle->buffer_size = length;
     send_handle->packets_sent = 0;
+    send_handle->conn = conn;  // Store connection reference for ACK
     *handle = send_handle;
     
-    // Calculate packet count
     uint32_t mtu_bytes = cts_msg.params.mtu_bytes;
     size_t total_packets = (length + mtu_bytes - 1) / mtu_bytes;
     
     std::cout << "[SDR API] Sending " << total_packets << " packets (MTU: " << mtu_bytes 
               << ", packets_per_chunk: " << cts_msg.params.packets_per_chunk << ")" << std::endl;
     
-    // Send all packets
     const uint8_t* data = static_cast<const uint8_t*>(buffer);
     int udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
     
@@ -382,7 +398,6 @@ int sdr_send_post(SDRConnection* conn, const void* buffer, size_t length, SDRSen
     std::cout << "[SDR API] Sending to " << cts_msg.params.udp_server_ip 
               << ":" << cts_msg.params.udp_server_port << std::endl;
     
-    // Send packets
     size_t packets_failed = 0;
     for (size_t i = 0; i < total_packets; ++i) {
         uint32_t packet_offset = static_cast<uint32_t>(i);
@@ -394,7 +409,6 @@ int sdr_send_post(SDRConnection* conn, const void* buffer, size_t length, SDRSen
             packet_data_len = SDRPacket::MAX_PAYLOAD_SIZE;
         }
         
-        // Create packet
         SDRPacket* packet = SDRPacket::create_data_packet(
             cts_msg.params.transfer_id, msg_id, packet_offset,
             cts_msg.params.packets_per_chunk,
@@ -408,21 +422,16 @@ int sdr_send_post(SDRConnection* conn, const void* buffer, size_t length, SDRSen
             continue;
         }
         
-        // Calculate total size BEFORE converting to network byte order
-        // (get_total_size uses header.payload_len which will be wrong after byte order conversion)
         size_t total_packet_size = sizeof(SDRPacketHeader) + packet_data_len;
         
-        // Convert to network byte order
         packet->header.to_network_order();
         
-        // Send packet (use pre-calculated size, not get_total_size() which reads wrong byte order)
         ssize_t sent = sendto(udp_socket, packet, total_packet_size, 0,
                              (struct sockaddr*)&server_addr, sizeof(server_addr));
         
         if (sent > 0) {
             send_handle->packets_sent++;
         } else {
-            // Only log first few failures to avoid spam
             if (packets_failed < 5) {
                 std::cerr << "[SDR API] sendto failed for packet " << i 
                           << ": " << strerror(errno) << " (packet_size: " 
@@ -452,14 +461,31 @@ int sdr_send_poll(SDRSendHandle* handle) {
     if (!handle) {
         return -1;
     }
+    if (handle->conn && handle->conn->tcp_client && handle->conn->tcp_client->is_connected()) {
+        ControlMessage ack_msg;
+        std::cout << "[SDR API] Waiting for completion ACK from receiver..." << std::endl;
+        
+        if (!handle->conn->tcp_client->receive_message(ack_msg)) {
+            std::cerr << "[SDR API] Failed to receive completion ACK" << std::endl;
+            return -1;
+        }
+        
+        if (ack_msg.msg_type == ControlMsgType::COMPLETE_ACK) {
+            std::cout << "[SDR API] Received completion ACK from receiver - transfer successful!" << std::endl;
+            return 0;
+        } else if (ack_msg.msg_type == ControlMsgType::INCOMPLETE_NACK) {
+            std::cerr << "[SDR API] Received incomplete NACK - receiver did not complete transfer (packet loss or timeout)" << std::endl;
+            return -1;
+        } else {
+            std::cerr << "[SDR API] Expected COMPLETE_ACK or INCOMPLETE_NACK, got message type: " 
+                      << static_cast<int>(ack_msg.msg_type) << std::endl;
+            return -1;
+        }
+    }
     
-    // For one-shot send, we consider it complete when all packets are sent
-    // In a real implementation, we'd wait for ACKs
-    // For now, just return success if packets_sent matches expected
     return 0;
 }
 
-// Send operations (streaming)
 int sdr_send_stream_start(SDRConnection* conn, const void* buffer, size_t length,
                          uint32_t initial_offset, SDRStreamHandle** handle) {
     if (!conn || !buffer || !handle) {
@@ -467,10 +493,9 @@ int sdr_send_stream_start(SDRConnection* conn, const void* buffer, size_t length
     }
     
     if (conn->is_receiver) {
-        return -1; // Only sender can send
+        return -1; 
     }
     
-    // Wait for CTS (same as one-shot)
     if (!conn->tcp_client || !conn->tcp_client->is_connected()) {
         return -1;
     }
@@ -486,7 +511,6 @@ int sdr_send_stream_start(SDRConnection* conn, const void* buffer, size_t length
     
     conn->connection_ctx->initialize(cts_msg.connection_id, cts_msg.params);
     
-    // Create stream handle
     auto* stream_handle = new SDRStreamHandle();
     stream_handle->msg_id = 0; // TODO: Proper allocation
     stream_handle->connection_ctx = conn->connection_ctx;
@@ -507,15 +531,12 @@ int sdr_send_stream_continue(SDRStreamHandle* handle, uint32_t offset, size_t le
         return -1;
     }
     
-    // Send chunk(s) starting at offset
     const ConnectionParams& params = handle->connection_ctx->get_params();
     uint32_t mtu_bytes = params.mtu_bytes;
     
-    // Calculate packet range to send
     uint32_t start_packet = offset / mtu_bytes;
     uint32_t end_packet = (offset + length + mtu_bytes - 1) / mtu_bytes;
     
-    // Create UDP socket
     int udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_socket < 0) {
         return -1;
@@ -533,7 +554,6 @@ int sdr_send_stream_continue(SDRStreamHandle* handle, uint32_t offset, size_t le
     
     const uint8_t* data = static_cast<const uint8_t*>(handle->user_buffer);
     
-    // Send packets in range
     for (uint32_t i = start_packet; i < end_packet && i < handle->total_packets; ++i) {
         uint32_t packet_offset = i;
         size_t packet_data_len = std::min(static_cast<size_t>(mtu_bytes),
@@ -548,7 +568,6 @@ int sdr_send_stream_continue(SDRStreamHandle* handle, uint32_t offset, size_t le
             continue;
         }
         
-        // Calculate total size BEFORE converting to network byte order
         size_t total_packet_size = sizeof(SDRPacketHeader) + packet_data_len;
         
         packet->header.to_network_order();

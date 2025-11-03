@@ -50,6 +50,7 @@ struct SDRRecvHandle {
     std::shared_ptr<MessageContext> msg_ctx;
     void* user_buffer;
     size_t buffer_size;
+    SDRConnection* conn;
 };
 
 // Send handle (one-shot)
@@ -59,6 +60,7 @@ struct SDRSendHandle {
     const void* user_buffer;
     size_t buffer_size;
     size_t packets_sent;
+    SDRConnection* conn; 
 };
 
 // Stream handle (streaming send)

@@ -6,25 +6,18 @@
 
 namespace sdr {
 
-// Backend packet bitmap manager
-// Tracks individual packets using lock-free atomic operations
 class BackendBitmap {
 public:
     BackendBitmap(uint32_t total_packets, uint16_t packets_per_chunk);
     
-    // Set packet as received (returns true if newly set, false if already set)
     bool set_packet_received(uint32_t packet_offset);
     
-    // Check if packet is received
     bool is_packet_received(uint32_t packet_offset) const;
     
-    // Check if chunk is complete (all packets in chunk received)
     bool is_chunk_complete(uint32_t chunk_id) const;
     
-    // Get number of packets received in a chunk
     uint32_t get_chunk_packet_count(uint32_t chunk_id) const;
     
-    // Get total packets received
     uint32_t get_total_packets_received() const;
     
     // Get packet bitmap snapshot (for frontend polling)
@@ -33,12 +26,10 @@ public:
         return packet_bitmap_.get();
     }
     
-    // Get number of words in the bitmap
     uint32_t get_bitmap_size() const {
         return num_words_;
     }
     
-    // Get bitmap word index and bit position for a packet
     static void get_bit_position(uint32_t packet_offset, uint32_t& word_idx, uint32_t& bit_pos) {
         word_idx = packet_offset / 64;
         bit_pos = packet_offset % 64;
