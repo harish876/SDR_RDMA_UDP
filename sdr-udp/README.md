@@ -2,6 +2,10 @@
 
 A high-performance UDP-based data transfer library with reliable delivery semantics, inspired by RDMA-style chunk-based transfer mechanisms. The library uses TCP for control/connection establishment and UDP for high-speed data transfer with chunk-level tracking.
 
+## Warning
+
+This is a WIP 🚧. Only use it as a reference. This is being worked on. 
+
 ## Features
 
 - **High-Performance UDP Transfer**: Uses UDP for data transfer while maintaining reliability through chunk-level tracking
