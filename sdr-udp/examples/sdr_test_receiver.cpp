@@ -126,6 +126,7 @@ int main(int argc, char* argv[]) {
     
 
     size_t prev_display_lines = 0;
+    const size_t window_size = static_cast<size_t>(config.get_uint32("window_size", 15));
     
     auto display_progress = [&]() {
         if (!recv_handle->msg_ctx || total_chunks == 0 || !recv_handle->msg_ctx->backend_bitmap) {
@@ -160,7 +161,6 @@ int main(int argc, char* argv[]) {
             return;
         }
         
-        const size_t window_size = 15;
         static size_t window_index = 0;
         size_t num_windows = (total_chunks + window_size - 1) / window_size;
         size_t start_chunk = (num_windows > 0) ? (window_index % num_windows) * window_size : 0;

@@ -8,6 +8,7 @@
 #include <array>
 #include <mutex>
 #include <atomic>
+#include <cstring>
 
 namespace sdr {
 
@@ -41,7 +42,7 @@ struct MessageContext {
         : msg_id(0), generation(0), state(MessageState::NULL_STATE),
           buffer(nullptr), buffer_size(0), total_packets(0), total_chunks(0),
           packets_per_chunk(0) {
-        std::memset(&connection_params, 0, sizeof(connection_params));
+        memset(&connection_params, 0, sizeof(connection_params));
     }
 };
 
@@ -92,7 +93,7 @@ private:
 inline ConnectionContext::ConnectionContext()
     : connection_id_(0), is_initialized_(false),
       tcp_socket_fd_(-1), udp_socket_fd_(-1) {
-    std::memset(&params_, 0, sizeof(params_));
+    memset(&params_, 0, sizeof(params_));
 }
 
 inline ConnectionContext::~ConnectionContext() {
