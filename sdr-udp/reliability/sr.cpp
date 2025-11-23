@@ -34,40 +34,42 @@ int SRSender::poll() {
         if (offset + length > send_handle_->buffer_size) {
             length = send_handle_->buffer_size - offset;
         }
-        sdr_send_stream_continue(nullptr /*unused in stub*/, 0, 0); // placeholder to keep API visible
-        // Use stream_continue via a temporary handle
         SDRStreamHandle* stream = nullptr;
         if (sdr_send_stream_start(conn_, send_handle_->user_buffer, send_handle_->buffer_size, 0, &stream) == 0) {
             sdr_send_stream_continue(stream, static_cast<uint32_t>(offset), static_cast<size_t>(length));
             sdr_send_stream_end(stream);
+            stats_.retransmits += count;
         }
     };
 
-    // Wait for control messages from receiver
-    ControlMessage msg;
-    if (!conn_->tcp_client->receive_message(msg)) {
-        return -1;
-    }
-
-    if (msg.msg_type == ControlMsgType::SR_ACK) {
-        // If cumulative ack covers all chunks, we are done
-        uint32_t cum_chunk = msg.params.max_inflight; // reused field
-        if (cum_chunk + 1 >= msg.params.total_chunks) {
-            return 0;
+    // Simple control loop: process SR_ACK/SR_NACK until COMPLETE or error
+    while (true) {
+        ControlMessage msg;
+        if (!conn_->tcp_client->receive_message(msg)) {
+            return -1;
         }
-    } else if (msg.msg_type == ControlMsgType::SR_NACK) {
-        uint32_t start_chunk = msg.params.rto_ms;         // reused for start
-        uint32_t missing_len = msg.params.rtt_alpha_ms;   // reused for length
-        if (missing_len == 0) missing_len = 1;
-        retransmit_range(start_chunk, missing_len);
-    } else if (msg.msg_type == ControlMsgType::COMPLETE_ACK) {
-        return 0;
-    } else if (msg.msg_type == ControlMsgType::INCOMPLETE_NACK) {
-        return -1;
-    }
 
-    // Fall back to polling completion if no SR messages indicate done.
-    return sdr_send_poll(send_handle_.get());
+        if (msg.msg_type == ControlMsgType::SR_ACK) {
+            uint32_t cum_chunk = msg.params.max_inflight; // reused field
+            if (cum_chunk + 1 >= msg.params.total_chunks) {
+                return 0;
+            }
+            // keep waiting
+        } else if (msg.msg_type == ControlMsgType::SR_NACK) {
+            uint32_t start_chunk = msg.params.rto_ms;         // reused for start
+            uint32_t missing_len = msg.params.rtt_alpha_ms;   // reused for length
+            if (missing_len == 0) missing_len = 1;
+            retransmit_range(start_chunk, missing_len);
+        } else if (msg.msg_type == ControlMsgType::COMPLETE_ACK) {
+            return 0;
+        } else if (msg.msg_type == ControlMsgType::INCOMPLETE_NACK) {
+            return -1;
+        } else {
+            // Unknown message; check completion and continue
+            int rc = sdr_send_poll(send_handle_.get());
+            if (rc == 0) return 0;
+        }
+    }
 }
 
 int SRReceiver::post_receive(SDRConnection* conn, void* buffer, size_t length) {
@@ -132,9 +134,17 @@ bool SRReceiver::pump() {
         conn_->tcp_server->send_message(msg);
         stats_.nacks_sent++;
     } else {
-        msg.msg_type = ControlMsgType::SR_ACK;
-        conn_->tcp_server->send_message(msg);
-        stats_.acks_sent++;
+        if (ctx->frontend_bitmap->get_total_chunks_completed() >= total_chunks) {
+            // All chunks complete: send completion and signal done
+            msg.msg_type = ControlMsgType::COMPLETE_ACK;
+            conn_->tcp_server->send_message(msg);
+            stats_.acks_sent++;
+            return true;
+        } else {
+            msg.msg_type = ControlMsgType::SR_ACK;
+            conn_->tcp_server->send_message(msg);
+            stats_.acks_sent++;
+        }
     }
 
     return (ctx->frontend_bitmap->get_total_chunks_completed() >= total_chunks);
