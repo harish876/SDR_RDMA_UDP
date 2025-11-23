@@ -247,6 +247,9 @@ int main(int argc, char* argv[]) {
         for (size_t chunk_id = start_chunk; chunk_id < end_chunk; ++chunk_id) {
             uint32_t packets_received = ctx->backend_bitmap ? ctx->backend_bitmap->get_chunk_packet_count(chunk_id) : 0;
             bool chunk_complete = ctx->backend_bitmap ? ctx->backend_bitmap->is_chunk_complete(chunk_id) : false;
+            if (chunk_complete) {
+                packets_received = packets_per_chunk; // avoid partial count when complete
+            }
             
             double chunk_pct = (static_cast<double>(packets_received) / static_cast<double>(packets_per_chunk)) * 100.0;
             size_t chunk_filled = static_cast<size_t>((chunk_pct / 100.0) * chunk_bar_width);

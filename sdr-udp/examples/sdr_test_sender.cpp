@@ -87,6 +87,13 @@ int main(int argc, char* argv[]) {
         if (rc != 0) {
             std::cerr << "[Sender][SR] Send failed\n";
         }
+        auto end_time = std::chrono::steady_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        std::cout << "[Sender][SR] Done in " << duration.count() << " ms"
+                  << " (acks=" << sr_sender.stats().acks_sent
+                  << ", nacks=" << sr_sender.stats().nacks_sent
+                  << ", retrans=" << sr_sender.stats().retransmits << ")\n";
+        start_time = end_time; // so common footer uses same duration
     } else if (mode == Mode::EC) {
         ECConfig ec_cfg{};
         ec_cfg.k_data = 0;
@@ -100,6 +107,10 @@ int main(int argc, char* argv[]) {
         if (rc != 0) {
             std::cerr << "[Sender][EC] Send failed\n";
         }
+        auto end_time = std::chrono::steady_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        std::cout << "[Sender][EC] Done in " << duration.count() << " ms\n";
+        start_time = end_time;
     } else {
         SDRSendHandle* raw_handle = nullptr;
         if (sdr_send_post(conn, send_buffer.data(), message_size, &raw_handle) != 0) {
@@ -110,17 +121,20 @@ int main(int argc, char* argv[]) {
         }
         send_handle.reset(raw_handle);
         sdr_send_poll(send_handle.get());
+        auto end_time = std::chrono::steady_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        std::cout << "[Sender] Sent " << send_handle->packets_sent << " packets in "
+                  << duration.count() << " ms" << std::endl;
+        start_time = end_time;
     }
     
-    auto end_time = std::chrono::steady_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    
     if (mode == Mode::SDR && send_handle) {
-        std::cout << "[Sender] Sent " << send_handle->packets_sent << " packets in " 
-                  << duration.count() << " ms" << std::endl;
+        // already logged above
+    } else if (mode == Mode::SR) {
+        // already logged above
     } else {
         std::cout << "[Sender] Mode " << (mode == Mode::SR ? "SR" : "EC")
-                  << " completed in " << duration.count() << " ms (rc=" << rc << ")\n";
+                  << " completed (rc=" << rc << ")\n";
     }
     
     sdr_disconnect(conn);
