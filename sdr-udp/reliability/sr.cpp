@@ -1,5 +1,11 @@
 #include "reliability/sr.h"
 #include <iostream>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <cstring>
+#include <errno.h>
 
 namespace sdr::reliability {
 
@@ -35,6 +41,47 @@ int SRSender::poll() {
     const uint32_t mtu = params.mtu_bytes;
     const uint16_t ppc = params.packets_per_chunk;
 
+    auto send_packets_range = [&](uint32_t start_packet, uint32_t packet_count) {
+        int udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
+        if (udp_socket < 0) {
+            std::cerr << "[SR][Sender] Failed to create UDP socket for retransmit: " << strerror(errno) << "\n";
+            return;
+        }
+        struct sockaddr_in server_addr;
+        std::memset(&server_addr, 0, sizeof(server_addr));
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(params.udp_server_port);
+        if (inet_pton(AF_INET, params.udp_server_ip, &server_addr.sin_addr) <= 0) {
+            std::cerr << "[SR][Sender] Invalid server IP for retransmit: " << params.udp_server_ip << "\n";
+            close(udp_socket);
+            return;
+        }
+
+        const uint8_t* data = static_cast<const uint8_t*>(send_handle_->user_buffer);
+        for (uint32_t i = 0; i < packet_count; ++i) {
+            uint32_t packet_offset = start_packet + i;
+            size_t data_offset = static_cast<size_t>(packet_offset) * mtu;
+            if (data_offset >= send_handle_->buffer_size) break;
+            size_t remaining = send_handle_->buffer_size - data_offset;
+            size_t packet_data_len = std::min(static_cast<size_t>(mtu), remaining);
+            if (packet_data_len > SDRPacket::MAX_PAYLOAD_SIZE) {
+                packet_data_len = SDRPacket::MAX_PAYLOAD_SIZE;
+            }
+
+            SDRPacket* packet = SDRPacket::create_data_packet(
+                params.transfer_id, send_handle_->msg_id, packet_offset,
+                ppc, data + data_offset, packet_data_len);
+            if (!packet) continue;
+            packet->header.chunk_seq = packet->header.get_chunk_id();
+            size_t total_packet_size = sizeof(SDRPacketHeader) + packet_data_len;
+            packet->header.to_network_order();
+            sendto(udp_socket, packet, total_packet_size, 0,
+                   (struct sockaddr*)&server_addr, sizeof(server_addr));
+            SDRPacket::destroy(packet);
+        }
+        close(udp_socket);
+    };
+
     auto retransmit_range = [&](uint32_t start_chunk, uint32_t count) {
         uint32_t mtu_bytes = mtu == 0 ? SDRPacket::MAX_PAYLOAD_SIZE : mtu;
         uint64_t chunk_bytes = static_cast<uint64_t>(ppc) * mtu_bytes;
@@ -44,15 +91,13 @@ int SRSender::poll() {
         if (offset + length > send_handle_->buffer_size) {
             length = send_handle_->buffer_size - offset;
         }
-        SDRStreamHandle* stream = nullptr;
-        if (sdr_send_stream_start(conn_, send_handle_->user_buffer, send_handle_->buffer_size, 0, &stream) == 0) {
-            sdr_send_stream_continue(stream, static_cast<uint32_t>(offset), static_cast<size_t>(length));
-            sdr_send_stream_end(stream);
-            stats_.retransmits += count;
-            auto now = std::chrono::steady_clock::now();
-            for (uint32_t c = start_chunk; c < start_chunk + count && c < total_chunks_; ++c) {
-                last_tx_[c] = now;
-            }
+        uint32_t start_packet = static_cast<uint32_t>(offset / mtu_bytes);
+        uint32_t packet_count = static_cast<uint32_t>((length + mtu_bytes - 1) / mtu_bytes);
+        send_packets_range(start_packet, packet_count);
+        stats_.retransmits += count;
+        auto now = std::chrono::steady_clock::now();
+        for (uint32_t c = start_chunk; c < start_chunk + count && c < total_chunks_; ++c) {
+            last_tx_[c] = now;
         }
     };
     auto retransmit_missing_from_bitmap = [&]() {
