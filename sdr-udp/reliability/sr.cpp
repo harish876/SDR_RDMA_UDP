@@ -102,17 +102,12 @@ int SRSender::poll() {
             last_tx_[c] = now;
         }
     };
-    auto retransmit_missing_from_bitmap = [&]() {
+    auto retransmit_missing_from_bitmap = [&](uint32_t limit) {
         uint32_t sent = 0;
-        auto now = std::chrono::steady_clock::now();
-        for (uint32_t c = 0; c < total_chunks_; ++c) {
+        for (uint32_t c = 0; c < total_chunks_ && sent < limit; ++c) {
             if (chunk_acked_[c]) continue;
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_tx_[c]).count();
-            if (elapsed > static_cast<long>(cfg_.rto_ms)) {
-                retransmit_range(c, 1);
-                sent++;
-                if (sent >= 8) break; // throttle burst
-            }
+            retransmit_range(c, 1);
+            sent++;
         }
     };
     
@@ -157,7 +152,7 @@ int SRSender::poll() {
             std::cout << "[SR][Sender] Received SR_ACK cum=" << cum_chunk
                       << " total=" << msg.params.total_chunks << std::endl;
             apply_bitmap(msg);
-            retransmit_missing_from_bitmap();
+            retransmit_missing_from_bitmap(4); // send a few missing chunks per control tick
             if (cum_chunk + 1 >= msg.params.total_chunks) {
                 return 0;
             }
@@ -168,9 +163,16 @@ int SRSender::poll() {
             std::cout << "[SR][Sender] Received SR_NACK start=" << start_chunk
                       << " len=" << missing_len << std::endl;
             if (missing_len == 0) missing_len = 1;
-            retransmit_range(start_chunk, missing_len);
+            // Retransmit only the unacked chunks in the indicated window, capped
+            uint32_t sent = 0;
+            uint32_t end_chunk = std::min<uint32_t>(start_chunk + missing_len, total_chunks_);
+            for (uint32_t c = start_chunk; c < end_chunk && sent < 8; ++c) {
+                if (chunk_acked_[c]) continue;
+                retransmit_range(c, 1);
+                sent++;
+            }
             apply_bitmap(msg);
-            retransmit_missing_from_bitmap();
+            retransmit_missing_from_bitmap(4);
         } else if (msg.msg_type == ControlMsgType::COMPLETE_ACK) {
             std::cout << "[SR][Sender] COMPLETE_ACK\n";
             return 0;
