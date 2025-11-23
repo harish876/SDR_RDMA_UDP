@@ -42,6 +42,8 @@ int SRSender::poll() {
     const uint16_t ppc = params.packets_per_chunk;
 
     auto send_packets_range = [&](uint32_t start_packet, uint32_t packet_count) {
+        std::cout << "[SR][Sender] Retransmitting packets " << start_packet
+                  << " .. " << (start_packet + packet_count - 1) << std::endl;
         int udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
         if (udp_socket < 0) {
             std::cerr << "[SR][Sender] Failed to create UDP socket for retransmit: " << strerror(errno) << "\n";
