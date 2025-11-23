@@ -29,6 +29,10 @@ for iface in "${ETHX[@]}"; do
 
 	echo "=== $iface : driver ==="
 	ethtool -i "$iface" || true
+	
+	echo "=== $iface : link speed & capabilities ==="
+	ethtool "$iface" | grep -E "Speed|Link|Supported|Advertised|Link detected" || true
+	
 	echo
 done
 
