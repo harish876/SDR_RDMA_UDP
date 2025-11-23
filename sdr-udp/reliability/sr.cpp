@@ -49,6 +49,23 @@ int SRSender::poll() {
             sdr_send_stream_continue(stream, static_cast<uint32_t>(offset), static_cast<size_t>(length));
             sdr_send_stream_end(stream);
             stats_.retransmits += count;
+            auto now = std::chrono::steady_clock::now();
+            for (uint32_t c = start_chunk; c < start_chunk + count && c < total_chunks_; ++c) {
+                last_tx_[c] = now;
+            }
+        }
+    };
+    auto retransmit_missing_from_bitmap = [&]() {
+        uint32_t sent = 0;
+        auto now = std::chrono::steady_clock::now();
+        for (uint32_t c = 0; c < total_chunks_; ++c) {
+            if (chunk_acked_[c]) continue;
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_tx_[c]).count();
+            if (elapsed > static_cast<long>(cfg_.rto_ms)) {
+                retransmit_range(c, 1);
+                sent++;
+                if (sent >= 8) break; // throttle burst
+            }
         }
     };
     
@@ -93,6 +110,7 @@ int SRSender::poll() {
             std::cout << "[SR][Sender] Received SR_ACK cum=" << cum_chunk
                       << " total=" << msg.params.total_chunks << std::endl;
             apply_bitmap(msg);
+            retransmit_missing_from_bitmap();
             if (cum_chunk + 1 >= msg.params.total_chunks) {
                 return 0;
             }
@@ -105,6 +123,7 @@ int SRSender::poll() {
             if (missing_len == 0) missing_len = 1;
             retransmit_range(start_chunk, missing_len);
             apply_bitmap(msg);
+            retransmit_missing_from_bitmap();
         } else if (msg.msg_type == ControlMsgType::COMPLETE_ACK) {
             std::cout << "[SR][Sender] COMPLETE_ACK\n";
             return 0;
