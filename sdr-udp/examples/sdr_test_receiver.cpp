@@ -324,10 +324,19 @@ int main(int argc, char* argv[]) {
             }
         }
         
-        if (total_chunks > 0 && chunks_received >= total_chunks) {
-            display_progress();
-            std::cout << "\n[Receiver] Transfer completed!" << std::endl;
-            break;
+        if (sr_receiver.has_value()) {
+            bool done = sr_receiver->pump();
+            if (done && total_chunks > 0 && chunks_received >= total_chunks) {
+                display_progress();
+                std::cout << "\n[Receiver] Transfer completed!" << std::endl;
+                break;
+            }
+        } else {
+            if (total_chunks > 0 && chunks_received >= total_chunks) {
+                display_progress();
+                std::cout << "\n[Receiver] Transfer completed!" << std::endl;
+                break;
+            }
         }
     
         std::this_thread::sleep_for(std::chrono::milliseconds(10));

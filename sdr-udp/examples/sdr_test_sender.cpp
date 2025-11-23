@@ -76,8 +76,8 @@ int main(int argc, char* argv[]) {
     int rc = 0;
     if (mode == Mode::SR) {
         SRConfig sr_cfg{};
-        sr_cfg.rto_ms = 0;
-        sr_cfg.nack_delay_ms = 0;
+        sr_cfg.rto_ms = 500;          // default RTO for demo
+        sr_cfg.nack_delay_ms = 200;   // delay before requesting retransmit
         sr_cfg.max_inflight_chunks = 0;
         SRSender sr_sender(sr_cfg);
         rc = sr_sender.start_send(conn, send_buffer.data(), message_size);
