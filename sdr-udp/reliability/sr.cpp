@@ -21,6 +21,7 @@ int SRSender::start_send(SDRConnection* conn, const void* buffer, size_t length)
     total_chunks_ = static_cast<uint32_t>((length + chunk_bytes - 1) / chunk_bytes);
     chunk_acked_.assign(total_chunks_, false);
     last_tx_.assign(total_chunks_, std::chrono::steady_clock::now());
+    last_control_tx_ = std::chrono::steady_clock::now();
     return 0;
 }
 
@@ -71,10 +72,9 @@ int SRSender::poll() {
     while (true) {
         ControlMessage msg;
         if (!conn_->tcp_client->receive_message(msg)) {
-            // Timeout: check completion and continue
+            // Timeout: poll completion and drive RTO-based retransmits
             int rc = sdr_send_poll(send_handle_.get());
             if (rc == 0) return 0;
-            // RTO-based retransmit
             auto now = std::chrono::steady_clock::now();
             for (uint32_t c = 0; c < total_chunks_; ++c) {
                 if (chunk_acked_[c]) continue;
@@ -134,6 +134,13 @@ bool SRReceiver::pump() {
     if (!recv_handle_ || !conn_ || !conn_->tcp_server) {
         return false;
     }
+    static auto last_ctrl = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    auto ctrl_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_ctrl).count();
+    if (ctrl_elapsed < static_cast<long>(std::max<uint32_t>(cfg_.nack_delay_ms, 100u))) {
+        return false; // limit control emission rate
+    }
+    last_ctrl = now;
     const uint8_t* bitmap = nullptr;
     size_t len = 0;
     if (sdr_recv_bitmap_get(recv_handle_.get(), &bitmap, &len) != 0) {
@@ -213,6 +220,7 @@ bool SRReceiver::pump() {
         }
     }
 
+    // Keep running until explicitly marked complete by COMPLETE_ACK
     return (ctx->frontend_bitmap->get_total_chunks_completed() >= total_chunks);
 }
 
