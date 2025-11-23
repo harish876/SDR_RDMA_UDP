@@ -115,6 +115,7 @@ int main(int argc, char* argv[]) {
     
     std::vector<uint8_t> recv_buffer(message_size);
     std::unique_ptr<SDRRecvHandle, void(*)(SDRRecvHandle*)> recv_handle(nullptr, [](SDRRecvHandle* h){ delete h; });
+    SDRRecvHandle* active_handle = nullptr; // non-owning pointer to whichever handle is active
     std::optional<SRReceiver> sr_receiver;
     std::optional<ECReceiver> ec_receiver;
 
@@ -132,6 +133,7 @@ int main(int argc, char* argv[]) {
             sdr_ctx_destroy(ctx);
             return 1;
         }
+        active_handle = sr_receiver->handle();
     } else if (mode == Mode::EC) {
         ECConfig ec_cfg{};
         ec_cfg.k_data = static_cast<uint16_t>(config.get_uint32("ec_k_data", 0));
@@ -144,6 +146,7 @@ int main(int argc, char* argv[]) {
             sdr_ctx_destroy(ctx);
             return 1;
         }
+        active_handle = ec_receiver->handle();
     } else {
         SDRRecvHandle* raw = nullptr;
         if (sdr_recv_post(conn, recv_buffer.data(), message_size, &raw) != 0) {
@@ -153,6 +156,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         recv_handle.reset(raw);
+        active_handle = recv_handle.get();
     }
     
     std::cout << "[Receiver] Receive posted, waiting for data..." << std::endl;
@@ -169,8 +173,9 @@ int main(int argc, char* argv[]) {
     size_t bitmap_len = 0;
     
     auto load_handle_ctx = [&]() -> MessageContext* {
-        if (recv_handle) return recv_handle->msg_ctx.get();
-        // SR/EC receivers manage their own handles; use connection to locate msg_id 0 for display.
+        if (active_handle && active_handle->msg_ctx) {
+            return active_handle->msg_ctx.get();
+        }
         return conn->connection_ctx->get_message(0);
     };
 
@@ -192,7 +197,8 @@ int main(int argc, char* argv[]) {
     const size_t window_size = static_cast<size_t>(config.get_uint32("window_size", 15));
     
     auto display_progress = [&]() {
-        if (!recv_handle->msg_ctx || total_chunks == 0 || !recv_handle->msg_ctx->backend_bitmap) {
+        MessageContext* ctx = load_handle_ctx();
+        if (!ctx || total_chunks == 0 || !ctx->backend_bitmap) {
             return;
         }
         
@@ -217,7 +223,7 @@ int main(int argc, char* argv[]) {
         std::cout << "] " << std::fixed << std::setprecision(1) << percentage << "% "
                   << "(" << chunks_received << "/" << total_chunks << " chunks)\n";
         
-        uint16_t packets_per_chunk = recv_handle->msg_ctx->packets_per_chunk;
+        uint16_t packets_per_chunk = ctx->packets_per_chunk;
         if (packets_per_chunk == 0) {
             prev_display_lines = 1;
             std::cout << std::flush;
@@ -239,8 +245,8 @@ int main(int argc, char* argv[]) {
         const size_t chunk_bar_width = 30;
         
         for (size_t chunk_id = start_chunk; chunk_id < end_chunk; ++chunk_id) {
-            uint32_t packets_received = recv_handle->msg_ctx->backend_bitmap->get_chunk_packet_count(chunk_id);
-            bool chunk_complete = recv_handle->msg_ctx->backend_bitmap->is_chunk_complete(chunk_id);
+            uint32_t packets_received = ctx->backend_bitmap ? ctx->backend_bitmap->get_chunk_packet_count(chunk_id) : 0;
+            bool chunk_complete = ctx->backend_bitmap ? ctx->backend_bitmap->is_chunk_complete(chunk_id) : false;
             
             double chunk_pct = (static_cast<double>(packets_received) / static_cast<double>(packets_per_chunk)) * 100.0;
             size_t chunk_filled = static_cast<size_t>((chunk_pct / 100.0) * chunk_bar_width);
@@ -281,16 +287,18 @@ int main(int argc, char* argv[]) {
         iterations++;
         display_update_counter++;
         
-        if (recv_handle) {
-            if (sdr_recv_bitmap_get(recv_handle.get(), &chunk_bitmap, &bitmap_len) != 0) {
+        if (active_handle) {
+            if (sdr_recv_bitmap_get(active_handle, &chunk_bitmap, &bitmap_len) != 0) {
                 std::cerr << "[Receiver] Failed to get bitmap" << std::endl;
                 break;
             }
         }
         
         if (auto ctx = load_handle_ctx()) {
-            chunks_received = ctx->frontend_bitmap->get_total_chunks_completed();
-            total_chunks = ctx->total_chunks;
+            if (ctx->frontend_bitmap) {
+                chunks_received = ctx->frontend_bitmap->get_total_chunks_completed();
+                total_chunks = ctx->total_chunks;
+            }
             
             bool chunks_changed = (chunks_received > last_chunks_received);
             if (chunks_changed) {
@@ -366,16 +374,8 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    if (recv_handle) {
-        sdr_recv_complete(recv_handle.get());
-    } else {
-        // SR/EC paths would handle completion inside their control loop; force completion here for now.
-        if (auto ctx_handle = conn->connection_ctx->get_message(0)) {
-            SDRRecvHandle tmp{};
-            tmp.msg_id = ctx_handle->msg_id;
-            tmp.msg_ctx = std::shared_ptr<MessageContext>(ctx_handle, [](MessageContext*) {});
-            sdr_recv_complete(&tmp);
-        }
+    if (active_handle) {
+        sdr_recv_complete(active_handle);
     }
     
     std::this_thread::sleep_for(std::chrono::milliseconds(50));

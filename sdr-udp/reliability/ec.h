@@ -42,6 +42,7 @@ public:
     int post_receive(SDRConnection* conn, void* buffer, size_t length);
     bool try_decode();
     const ECStats& stats() const { return stats_; }
+    SDRRecvHandle* handle() const { return recv_handle_.get(); }
 
 private:
     ECConfig cfg_;

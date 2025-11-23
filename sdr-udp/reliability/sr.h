@@ -55,6 +55,7 @@ public:
     bool pump();
 
     const SRStats& stats() const { return stats_; }
+    SDRRecvHandle* handle() const { return recv_handle_.get(); }
 
 private:
     SRConfig cfg_;
