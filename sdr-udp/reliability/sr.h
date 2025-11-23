@@ -37,6 +37,11 @@ public:
 private:
     SRConfig cfg_;
     SRStats stats_{};
+    uint32_t total_chunks_{0};
+    uint32_t mtu_bytes_{0};
+    uint16_t packets_per_chunk_{0};
+    std::vector<bool> chunk_acked_;
+    std::vector<std::chrono::steady_clock::time_point> last_tx_;
     std::unique_ptr<SDRSendHandle, void(*)(SDRSendHandle*)> send_handle_{nullptr, [](SDRSendHandle* h){ delete h; }};
     SDRConnection* conn_{nullptr};
 

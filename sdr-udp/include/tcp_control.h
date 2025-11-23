@@ -47,6 +47,8 @@ struct ControlMessage {
     ControlMsgType msg_type;
     uint32_t connection_id;          // Connection identifier
     ConnectionParams params;         // Connection parameters
+    uint16_t chunk_bitmap_words;     // Number of 64-bit words used in chunk_bitmap
+    uint64_t chunk_bitmap[4];        // Chunk bitmap snapshot (up to 256 chunks)
     
     // Serialization helpers
     size_t serialize(uint8_t* buffer, size_t buffer_size) const;
