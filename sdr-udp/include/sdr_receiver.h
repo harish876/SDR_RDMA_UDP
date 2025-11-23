@@ -8,6 +8,8 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <vector>
+#include <algorithm>
 #include <iostream>
 #include <cstring>
 #include <chrono>
@@ -26,7 +28,7 @@ public:
     UDPReceiver(std::shared_ptr<ConnectionContext> connection);
     ~UDPReceiver();
     
-    bool start(uint16_t udp_port);
+    bool start(uint16_t base_port, uint16_t num_channels);
     
     void stop();
     
@@ -34,13 +36,18 @@ public:
     
 private:
     std::shared_ptr<ConnectionContext> connection_;
-    std::thread receiver_thread_;
+    struct Worker {
+        std::thread thread;
+        int udp_socket_fd{-1};
+        uint16_t udp_port{0};
+    };
+    std::vector<Worker> workers_;
     std::atomic<bool> should_stop_;
     std::atomic<bool> is_running_;
-    int udp_socket_fd_;
-    uint16_t udp_port_;
+    uint16_t base_port_;
+    uint16_t num_channels_;
     
-    void receiver_thread_func();
+    void receiver_thread_func(size_t worker_idx);
     
     void process_packet(const SDRPacketHeader& header, const uint8_t* payload, size_t payload_len);
     
@@ -51,103 +58,108 @@ private:
 // Implementation
 inline UDPReceiver::UDPReceiver(std::shared_ptr<ConnectionContext> connection)
     : connection_(connection), should_stop_(false), is_running_(false),
-      udp_socket_fd_(-1), udp_port_(0) {
+      base_port_(0), num_channels_(1) {
 }
 
 inline UDPReceiver::~UDPReceiver() {
     stop();
 }
 
-inline bool UDPReceiver::start(uint16_t udp_port) {
+inline bool UDPReceiver::start(uint16_t base_port, uint16_t num_channels) {
     if (is_running_.load()) {
         return false; // Already running
     }
     
-    // Create UDP socket
-    udp_socket_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
-    if (udp_socket_fd_ < 0) {
-        std::cerr << "[UDP Receiver] Failed to create socket: " << strerror(errno) << std::endl;
-        return false;
-    }
-    
-    // Set socket options
-    int opt = 1;
-    if (setsockopt(udp_socket_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        std::cerr << "[UDP Receiver] setsockopt failed: " << strerror(errno) << std::endl;
-        close(udp_socket_fd_);
-        udp_socket_fd_ = -1;
-        return false;
-    }
-    
-    // Default is usually ~200KB, increase to 64MB for large transfers
-    int recv_buf_size = 64 * 1024 * 1024; // 64 MB
-    if (setsockopt(udp_socket_fd_, SOL_SOCKET, SO_RCVBUF, &recv_buf_size, sizeof(recv_buf_size)) < 0) {
-        std::cerr << "[UDP Receiver] Warning: Failed to set SO_RCVBUF: " << strerror(errno) << std::endl;
-    } else {
-        int actual_buf_size = 0;
-        socklen_t len = sizeof(actual_buf_size);
-        if (getsockopt(udp_socket_fd_, SOL_SOCKET, SO_RCVBUF, &actual_buf_size, &len) == 0) {
-            std::cout << "[UDP Receiver] UDP receive buffer size: " << (actual_buf_size / 1024) << " KB" << std::endl;
-        }
-    }
-    
-    // Bind to port
-    struct sockaddr_in server_addr;
-    std::memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(udp_port);
-    
-    if (bind(udp_socket_fd_, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        std::cerr << "[UDP Receiver] Bind failed: " << strerror(errno) << std::endl;
-        close(udp_socket_fd_);
-        udp_socket_fd_ = -1;
-        return false;
-    }
-    
-    udp_port_ = udp_port;
-    connection_->set_udp_socket(udp_socket_fd_);
-    
-    // Start receiver thread
+    base_port_ = base_port;
+    num_channels_ = std::max<uint16_t>(1, num_channels);
+    workers_.clear();
+    workers_.resize(num_channels_);
     should_stop_.store(false);
-    receiver_thread_ = std::thread(&UDPReceiver::receiver_thread_func, this);
-    
-    // Wait a bit for thread to start
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    
-    std::cout << "[UDP Receiver] Started on port " << udp_port << std::endl;
+
+    for (uint16_t idx = 0; idx < num_channels_; ++idx) {
+        uint16_t port = base_port_ + idx;
+        int udp_socket_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
+        if (udp_socket_fd_ < 0) {
+            std::cerr << "[UDP Receiver] Failed to create socket: " << strerror(errno) << std::endl;
+            stop();
+            return false;
+        }
+        
+        int opt = 1;
+        if (setsockopt(udp_socket_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+            std::cerr << "[UDP Receiver] setsockopt failed: " << strerror(errno) << std::endl;
+            close(udp_socket_fd_);
+            stop();
+            return false;
+        }
+        
+        int recv_buf_size = 64 * 1024 * 1024; // 64 MB
+        if (setsockopt(udp_socket_fd_, SOL_SOCKET, SO_RCVBUF, &recv_buf_size, sizeof(recv_buf_size)) < 0) {
+            std::cerr << "[UDP Receiver] Warning: Failed to set SO_RCVBUF: " << strerror(errno) << std::endl;
+        }
+        
+        struct sockaddr_in server_addr;
+        std::memset(&server_addr, 0, sizeof(server_addr));
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_addr.s_addr = INADDR_ANY;
+        server_addr.sin_port = htons(port);
+        
+        if (bind(udp_socket_fd_, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+            std::cerr << "[UDP Receiver] Bind failed on port " << port << ": " << strerror(errno) << std::endl;
+            close(udp_socket_fd_);
+            stop();
+            return false;
+        }
+        
+        workers_[idx].udp_socket_fd = udp_socket_fd_;
+        workers_[idx].udp_port = port;
+    }
+
+    if (!workers_.empty()) {
+        connection_->set_udp_socket(workers_[0].udp_socket_fd);
+    }
+
+    // Start receiver threads
+    for (size_t idx = 0; idx < workers_.size(); ++idx) {
+        workers_[idx].thread = std::thread(&UDPReceiver::receiver_thread_func, this, idx);
+    }
+
+    is_running_.store(true);
+    std::cout << "[UDP Receiver] Started " << workers_.size() << " channel(s) at base port "
+              << base_port_ << std::endl;
     return true;
 }
 
 inline void UDPReceiver::stop() {
-    if (is_running_.load()) {
-        should_stop_.store(true);
-        
-        // Wait for thread to finish
-        if (receiver_thread_.joinable()) {
-            receiver_thread_.join();
+    should_stop_.store(true);
+
+    for (auto& w : workers_) {
+        if (w.thread.joinable()) {
+            w.thread.join();
         }
-        
-        // Close socket
-        if (udp_socket_fd_ >= 0) {
-            close(udp_socket_fd_);
-            udp_socket_fd_ = -1;
+        if (w.udp_socket_fd >= 0) {
+            close(w.udp_socket_fd);
+            w.udp_socket_fd = -1;
         }
-        
-        is_running_.store(false);
     }
+    workers_.clear();
+    is_running_.store(false);
 }
 
-inline void UDPReceiver::receiver_thread_func() {
-    is_running_.store(true);
-    
+inline void UDPReceiver::receiver_thread_func(size_t worker_idx) {
     const size_t max_packet_size = sizeof(SDRPacketHeader) + SDRPacket::MAX_PAYLOAD_SIZE;
     uint8_t recv_buffer[max_packet_size];
-    
+
+    if (worker_idx >= workers_.size()) {
+        return;
+    }
+    int udp_socket_fd_ = workers_[worker_idx].udp_socket_fd;
+
     struct sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
     
-    std::cout << "[UDP Receiver] Thread started, waiting for packets..." << std::endl;
+    std::cout << "[UDP Receiver] Thread started on port " << workers_[worker_idx].udp_port
+              << ", waiting for packets..." << std::endl;
     
     while (!should_stop_.load(std::memory_order_acquire)) {
         // Set socket timeout for polling
@@ -204,8 +216,6 @@ inline void UDPReceiver::receiver_thread_func() {
         process_packet(header, payload, payload_len);
     }
     
-    is_running_.store(false);
-    std::cout << "[UDP Receiver] Thread stopped" << std::endl;
 }
 
 inline void UDPReceiver::process_packet(const SDRPacketHeader& header, 
@@ -225,20 +235,26 @@ inline void UDPReceiver::process_packet(const SDRPacketHeader& header,
     }
     
     // Check state
-    if (msg_ctx->state == MessageState::COMPLETED || 
+    if (msg_ctx->state == MessageState::DEAD || 
+        msg_ctx->state == MessageState::COMPLETED || 
         msg_ctx->state == MessageState::NULL_STATE) {
         // Message already completed, ignore late packet
         return;
     }
     
-        // Write packet to buffer
-        write_packet_to_buffer(msg_ctx, header.packet_offset, payload, payload_len);
-        
-        // Update backend packet bitmap
-        if (msg_ctx->backend_bitmap) {
-            msg_ctx->backend_bitmap->set_packet_received(header.packet_offset);
-            // Removed verbose logging - progress is shown via chunk bitmap display
-        }
+    // Skip duplicate packet writes to avoid extra memcpy
+    if (msg_ctx->backend_bitmap && msg_ctx->backend_bitmap->is_packet_received(header.packet_offset)) {
+        return;
+    }
+
+    // Write packet to buffer
+    write_packet_to_buffer(msg_ctx, header.packet_offset, payload, payload_len);
+    
+    // Update backend packet bitmap
+    if (msg_ctx->backend_bitmap) {
+        msg_ctx->backend_bitmap->set_packet_received(header.packet_offset);
+        // Removed verbose logging - progress is shown via chunk bitmap display
+    }
 }
 
 inline void UDPReceiver::write_packet_to_buffer(MessageContext* msg_ctx, 
@@ -285,4 +301,3 @@ inline void UDPReceiver::write_packet_to_buffer(MessageContext* msg_ctx,
 }
 
 } // namespace sdr
-

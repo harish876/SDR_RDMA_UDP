@@ -8,12 +8,15 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Include directories
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 # Source files
 set(SDR_SOURCES
     src/tcp_control.cpp
     src/sdr_api.cpp
     src/config_parser.cpp
+    reliability/sr.cpp
+    reliability/ec.cpp
 )
 
 # Create library
@@ -37,5 +40,4 @@ install(TARGETS sdr_udp sdr_test_receiver sdr_test_sender
         RUNTIME DESTINATION bin)
 
 install(DIRECTORY include/ DESTINATION include/sdr)
-
 

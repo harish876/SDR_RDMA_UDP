@@ -12,7 +12,11 @@ enum class ControlMsgType : uint8_t {
     ACCEPT = 2,         // Receiver accepts offer parameters
     REJECT = 3,         // Receiver rejects offer
     COMPLETE_ACK = 4,   // Receiver acknowledges transfer completion
-    INCOMPLETE_NACK = 5 // Receiver indicates transfer incomplete (timeout/packet loss)
+    INCOMPLETE_NACK = 5,// Receiver indicates transfer incomplete (timeout/packet loss)
+    SR_ACK = 6,         // Selective Repeat ACK (cumulative + bitmap window)
+    SR_NACK = 7,        // Selective Repeat NACK (gap hint or timeout)
+    EC_ACK = 8,         // Erasure coding ACK (decode success)
+    EC_NACK = 9         // Erasure coding NACK (fallback request)
 };
 
 // Connection parameters structure (used in OFFER and CTS)
@@ -29,6 +33,8 @@ struct ConnectionParams {
     uint32_t max_inflight;           // Maximum in-flight messages
     uint32_t rto_ms;                 // Retransmission timeout in milliseconds
     uint32_t rtt_alpha_ms;           // RTT alpha coefficient (for future SR use)
+    uint16_t num_channels;           // Number of UDP channels (Section 3.4)
+    uint16_t channel_base_port;      // Base port; channels use base + id
     
     // Network parameters
     char udp_server_ip[16];          // Receiver's UDP server IP
@@ -112,5 +118,3 @@ public:
 };
 
 } // namespace sdr
-
-
