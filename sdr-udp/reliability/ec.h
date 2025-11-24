@@ -33,6 +33,7 @@ private:
     ECConfig cfg_;
     ECStats stats_{};
     std::vector<std::unique_ptr<SDRSendHandle, void(*)(SDRSendHandle*)>> sends_;
+    std::vector<uint8_t> send_storage_; // holds data+parity buffer
     SDRConnection* conn_{nullptr};
 };
 

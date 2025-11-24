@@ -18,9 +18,16 @@ namespace sdr::reliability {
 int ECSender::encode_and_send(SDRConnection* conn, const void* buffer, size_t length) {
     conn_ = conn;
     sends_.clear();
-
     // Use existing connection params (set via CTS in sdr_api paths)
-    const ConnectionParams& params = conn->connection_ctx->get_params();
+    ConnectionParams params = conn->connection_ctx->get_params();
+    // If not initialized, try to receive CTS here
+    if ((params.mtu_bytes == 0 || params.packets_per_chunk == 0) && conn->tcp_client) {
+        ControlMessage cts_msg;
+        if (conn->tcp_client->receive_message(cts_msg) && cts_msg.msg_type == ControlMsgType::CTS) {
+            conn->connection_ctx->initialize(cts_msg.connection_id, cts_msg.params);
+            params = cts_msg.params;
+        }
+    }
     uint32_t mtu = params.mtu_bytes ? params.mtu_bytes : SDRPacket::MAX_PAYLOAD_SIZE;
     if (mtu > SDRPacket::MAX_PAYLOAD_SIZE) {
         mtu = SDRPacket::MAX_PAYLOAD_SIZE;
@@ -39,8 +46,8 @@ int ECSender::encode_and_send(SDRConnection* conn, const void* buffer, size_t le
     uint64_t total_chunks = data_chunks + parity_chunks;
     uint64_t total_bytes = total_chunks * chunk_bytes;
 
-    std::vector<uint8_t> send_buf(static_cast<size_t>(total_bytes), 0);
-    std::memcpy(send_buf.data(), buffer, std::min<uint64_t>(data_bytes, total_bytes));
+    send_storage_.assign(static_cast<size_t>(total_bytes), 0);
+    std::memcpy(send_storage_.data(), buffer, std::min<uint64_t>(data_bytes, total_bytes));
 
 #ifdef HAS_ISAL
     std::vector<uint8_t*> data_ptrs(k);
@@ -53,14 +60,14 @@ int ECSender::encode_and_send(SDRConnection* conn, const void* buffer, size_t le
     for (uint32_t s = 0; s < stripes; ++s) {
         uint32_t stripe_data = std::min<uint32_t>(k, data_chunks - s * k);
         for (uint32_t i = 0; i < stripe_data; ++i) {
-            data_ptrs[i] = send_buf.data() + (s * k + i) * chunk_bytes;
+            data_ptrs[i] = send_storage_.data() + (s * k + i) * chunk_bytes;
         }
         // Zero-pad remaining data pointers if last stripe is partial
         for (uint32_t i = stripe_data; i < k; ++i) {
-            data_ptrs[i] = send_buf.data(); // any valid pointer; data is already zeroed
+            data_ptrs[i] = send_storage_.data(); // any valid pointer; data is already zeroed
         }
         for (uint32_t p = 0; p < m; ++p) {
-            parity_ptrs[p] = send_buf.data() + (data_chunks + s * m + p) * chunk_bytes;
+            parity_ptrs[p] = send_storage_.data() + (data_chunks + s * m + p) * chunk_bytes;
         }
         ec_encode_data(chunk_bytes, k, m, gftbl.data(), data_ptrs.data(), parity_ptrs.data());
     }
@@ -70,7 +77,7 @@ int ECSender::encode_and_send(SDRConnection* conn, const void* buffer, size_t le
 #endif
 
     SDRSendHandle* raw_handle = nullptr;
-    int rc = sdr_send_post(conn, send_buf.data(), send_buf.size(), &raw_handle);
+    int rc = sdr_send_post(conn, send_storage_.data(), send_storage_.size(), &raw_handle);
     if (rc != 0) {
         std::cerr << "[EC] Failed to send data+parity buffer\n";
         return rc;
