@@ -300,6 +300,8 @@ int main(int argc, char* argv[]) {
     bool transfer_incomplete = false;
     size_t display_update_counter = 0;
     
+    bool ec_decoded_success = false;
+
     while (iterations < MAX_ITERATIONS) {
         iterations++;
         display_update_counter++;
@@ -354,7 +356,7 @@ int main(int argc, char* argv[]) {
                 chunks_received = total_chunks;
                 display_progress();
                 std::cout << "\n[Receiver][EC] Decode successful, completing transfer" << std::endl;
-                sdr_recv_complete(active_handle);
+                ec_decoded_success = true;
                 break;
             }
         } else {
@@ -410,7 +412,16 @@ int main(int argc, char* argv[]) {
     }
     
     if (active_handle) {
-        sdr_recv_complete(active_handle);
+        if (mode == Mode::EC && ec_receiver.has_value() && ec_decoded_success) {
+            if (active_handle->msg_ctx && active_handle->msg_ctx->frontend_bitmap) {
+                active_handle->msg_ctx->frontend_bitmap->stop_polling();
+            }
+            if (active_handle->msg_ctx) {
+                active_handle->msg_ctx->state = MessageState::COMPLETED;
+            }
+        } else {
+            sdr_recv_complete(active_handle);
+        }
     }
     
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
