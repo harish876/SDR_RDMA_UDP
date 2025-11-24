@@ -9,8 +9,10 @@
 #include <unistd.h>
 #include <errno.h>
 
-#ifdef HAS_ISAL
+#if defined(HAS_ISAL) && __has_include(<isa-l/erasure_code.h>)
 #include <isa-l/erasure_code.h>
+#else
+#undef HAS_ISAL
 #endif
 
 namespace sdr::reliability {
@@ -178,6 +180,12 @@ int ECSender::poll() {
 
 int ECReceiver::post_receive(SDRConnection* conn, void* buffer, size_t length) {
     conn_ = conn;
+    ReliabilityCallbacks cbs{};
+    cbs.on_packet = [this](uint32_t msg_id, uint32_t packet) { return handle_packet(msg_id, packet); };
+    cbs.on_chunk_complete = [this](uint32_t msg_id, uint32_t chunk) { handle_chunk_complete(msg_id, chunk); };
+    cbs.on_message_complete = [this](uint32_t msg_id) { handle_message_complete(msg_id); };
+    conn_->connection_ctx->set_reliability_callbacks(cbs);
+
     uint32_t mtu = conn->connection_ctx->get_params().mtu_bytes ? conn->connection_ctx->get_params().mtu_bytes : SDRPacket::MAX_PAYLOAD_SIZE;
     if (mtu > SDRPacket::MAX_PAYLOAD_SIZE) {
         mtu = SDRPacket::MAX_PAYLOAD_SIZE;
@@ -198,6 +206,7 @@ int ECReceiver::post_receive(SDRConnection* conn, void* buffer, size_t length) {
         return -1;
     }
     decode_attempts_ = 0;
+    chunk_done_.assign(data_chunks_ + parity_chunks_, false);
 
     SDRRecvHandle* raw_handle = nullptr;
     int rc = sdr_recv_post(conn, buffer, length, &raw_handle);
@@ -215,18 +224,13 @@ int ECReceiver::post_receive(SDRConnection* conn, void* buffer, size_t length) {
 
 bool ECReceiver::try_decode() {
     if (!recv_handle_) return false;
-    const uint8_t* bitmap = nullptr;
-    size_t len = 0;
-    if (sdr_recv_bitmap_get(recv_handle_.get(), &bitmap, &len) != 0) {
-        return false;
-    }
     auto* ctx = recv_handle_->msg_ctx.get();
-    if (!ctx || !ctx->frontend_bitmap) return false;
+    if (!ctx) return false;
 
     // Count missing data chunks
     std::vector<uint32_t> missing_data;
     for (uint32_t c = 0; c < data_chunks_; ++c) {
-        if (!ctx->frontend_bitmap->is_chunk_complete(c)) {
+        if (c >= chunk_done_.size() || !chunk_done_[c]) {
             missing_data.push_back(c);
         }
     }
@@ -279,7 +283,7 @@ bool ECReceiver::try_decode() {
     // Build lists of available chunks (data+parity)
     std::vector<uint32_t> avail_idxs;
     for (uint32_t c = 0; c < data_chunks_ + parity_chunks_; ++c) {
-        if (ctx->frontend_bitmap->is_chunk_complete(c)) {
+        if (c < chunk_done_.size() && chunk_done_[c]) {
             avail_idxs.push_back(c);
         }
     }
@@ -329,6 +333,35 @@ bool ECReceiver::try_decode() {
     stats_.fallback_sr++;
     return false;
 #endif
+}
+
+bool ECReceiver::handle_packet(uint32_t msg_id, uint32_t packet) {
+    if (!recv_handle_ || !recv_handle_->msg_ctx || recv_handle_->msg_ctx->msg_id != msg_id) {
+        return false;
+    }
+    if (recv_handle_->msg_ctx->backend_bitmap) {
+        recv_handle_->msg_ctx->backend_bitmap->set_packet_received(packet);
+    }
+    return true;
+}
+
+void ECReceiver::handle_chunk_complete(uint32_t msg_id, uint32_t chunk) {
+    if (!recv_handle_ || !recv_handle_->msg_ctx || recv_handle_->msg_ctx->msg_id != msg_id) return;
+    if (chunk < chunk_done_.size()) {
+        chunk_done_[chunk] = true;
+    }
+    try_decode();
+}
+
+void ECReceiver::handle_message_complete(uint32_t msg_id) {
+    if (!recv_handle_ || !recv_handle_->msg_ctx || recv_handle_->msg_ctx->msg_id != msg_id) return;
+    if (conn_ && conn_->tcp_server) {
+        ControlMessage msg{};
+        msg.magic = ControlMessage::MAGIC_VALUE;
+        msg.msg_type = ControlMsgType::EC_ACK;
+        msg.connection_id = conn_->connection_ctx->get_connection_id();
+        conn_->tcp_server->send_message(msg);
+    }
 }
 
 } // namespace sdr::reliability

@@ -235,6 +235,14 @@ int sdr_recv_post(SDRConnection* conn, void* buffer, size_t length, SDRRecvHandl
         static_cast<uint32_t>(total_packets), params.packets_per_chunk);
     msg_ctx->frontend_bitmap = std::make_shared<FrontendBitmap>(
         msg_ctx->backend_bitmap, static_cast<uint32_t>(total_chunks));
+
+    // Register message with pipeline/engine for callbacks
+    if (conn->connection_ctx) {
+        // Clear any previous reliability callbacks unless set by SR/EC
+        conn->connection_ctx->set_reliability_callbacks({});
+        conn->connection_ctx->get_pipeline()->register_message(msg_id, static_cast<uint32_t>(total_packets),
+                                                               params.packets_per_chunk);
+    }
     
     // Start frontend polling
     msg_ctx->frontend_bitmap->start_polling(100); // 100 microsecond polling interval

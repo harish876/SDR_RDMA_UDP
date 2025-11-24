@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <cstring>
 #include <errno.h>
+#include <algorithm>
 
 namespace sdr::reliability {
 
@@ -204,6 +205,12 @@ int SRSender::poll() {
 
 int SRReceiver::post_receive(SDRConnection* conn, void* buffer, size_t length) {
     conn_ = conn;
+    ReliabilityCallbacks cbs{};
+    cbs.on_packet = [this](uint32_t msg_id, uint32_t packet) { return handle_packet(msg_id, packet); };
+    cbs.on_chunk_complete = [this](uint32_t msg_id, uint32_t chunk) { handle_chunk_complete(msg_id, chunk); };
+    cbs.on_message_complete = [this](uint32_t msg_id) { handle_message_complete(msg_id); };
+    conn_->connection_ctx->set_reliability_callbacks(cbs);
+
     SDRRecvHandle* raw_handle = nullptr;
     int rc = sdr_recv_post(conn, buffer, length, &raw_handle);
     if (rc != 0) {
@@ -211,63 +218,72 @@ int SRReceiver::post_receive(SDRConnection* conn, void* buffer, size_t length) {
         return rc;
     }
     recv_handle_.reset(raw_handle);
+    if (recv_handle_->msg_ctx) {
+        total_chunks_ = static_cast<uint32_t>(recv_handle_->msg_ctx->total_chunks);
+        chunk_done_.assign(total_chunks_, false);
+    }
     return 0;
 }
 
 bool SRReceiver::pump() {
+    // Callback-driven; pump now just emits based on current chunk_done_ state.
     if (!recv_handle_ || !conn_ || !conn_->tcp_server) {
         return false;
     }
-    static auto last_ctrl = std::chrono::steady_clock::now();
-    auto now = std::chrono::steady_clock::now();
-    auto ctrl_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_ctrl).count();
-    uint32_t ctrl_interval = cfg_.nack_delay_ms ? cfg_.nack_delay_ms : std::max<uint32_t>(cfg_.base_rtt_ms / 2, 50u);
-    if (ctrl_elapsed < static_cast<long>(ctrl_interval)) {
-        return false; // limit control emission rate
-    }
-    last_ctrl = now;
-    const uint8_t* bitmap = nullptr;
-    size_t len = 0;
-    if (sdr_recv_bitmap_get(recv_handle_.get(), &bitmap, &len) != 0) {
+    emit_control();
+    return std::all_of(chunk_done_.begin(), chunk_done_.end(), [](bool v){ return v; });
+}
+
+bool SRReceiver::handle_packet(uint32_t msg_id, uint32_t packet) {
+    if (!recv_handle_ || !recv_handle_->msg_ctx || recv_handle_->msg_ctx->msg_id != msg_id) {
         return false;
     }
-
-    auto* ctx = recv_handle_->msg_ctx.get();
-    if (!ctx || !ctx->frontend_bitmap) return false;
-    uint32_t total_chunks = ctx->total_chunks;
-
-    // Compute cumulative ack (highest contiguous chunk)
-    uint32_t cumulative = 0;
-    while (cumulative < total_chunks && ctx->frontend_bitmap->is_chunk_complete(cumulative)) {
-        cumulative++;
+    if (recv_handle_->msg_ctx->backend_bitmap) {
+        recv_handle_->msg_ctx->backend_bitmap->set_packet_received(packet);
     }
-    if (cumulative > 0) cumulative -= 1; // last completed contiguous index
+    return true;
+}
 
-    // Build chunk bitmap snapshot (up to 8 words -> 512 chunks)
+void SRReceiver::handle_chunk_complete(uint32_t msg_id, uint32_t chunk) {
+    if (msg_id != (recv_handle_ && recv_handle_->msg_ctx ? recv_handle_->msg_ctx->msg_id : UINT32_MAX)) {
+        return;
+    }
+    if (chunk < chunk_done_.size()) {
+        chunk_done_[chunk] = true;
+    }
+    if (recv_handle_ && recv_handle_->msg_ctx && recv_handle_->msg_ctx->frontend_bitmap) {
+        recv_handle_->msg_ctx->frontend_bitmap->poll_once();
+    }
+    emit_control();
+}
+
+void SRReceiver::handle_message_complete(uint32_t msg_id) {
+    if (!recv_handle_ || !recv_handle_->msg_ctx || recv_handle_->msg_ctx->msg_id != msg_id) return;
+    if (conn_ && conn_->tcp_server) {
+        ControlMessage msg{};
+        msg.magic = ControlMessage::MAGIC_VALUE;
+        msg.msg_type = ControlMsgType::COMPLETE_ACK;
+        msg.connection_id = conn_->connection_ctx->get_connection_id();
+        conn_->tcp_server->send_message(msg);
+        stats_.acks_sent++;
+    }
+}
+
+void SRReceiver::emit_control() {
+    if (!conn_ || !conn_->tcp_server || chunk_done_.empty()) return;
+    uint32_t total_chunks = total_chunks_;
+    uint32_t cumulative = 0;
+    while (cumulative < total_chunks && chunk_done_[cumulative]) cumulative++;
+    if (cumulative > 0) cumulative -= 1;
+
     uint64_t words[8] = {0,0,0,0,0,0,0,0};
     uint32_t word_count = (total_chunks + 63) / 64;
     if (word_count > 8) word_count = 8;
     for (uint32_t c = 0; c < total_chunks && c < 512; ++c) {
-        if (ctx->frontend_bitmap->is_chunk_complete(c)) {
+        if (chunk_done_[c]) {
             uint32_t w = c / 64;
             uint32_t b = c % 64;
-            if (w < 8) words[w] |= (1ULL << b);
-        }
-    }
-
-    // Find first gap after cumulative (no cap; sender will throttle retransmits)
-    uint32_t missing_start = 0;
-    uint32_t missing_len = 0;
-    for (uint32_t c = cumulative + 1; c < total_chunks; ++c) {
-        if (!ctx->frontend_bitmap->is_chunk_complete(c)) {
-            missing_start = c;
-            // count run of missing
-            uint32_t run = 0;
-            while (c < total_chunks && !ctx->frontend_bitmap->is_chunk_complete(c)) {
-                ++run; ++c;
-            }
-            missing_len = run;
-            break;
+            words[w] |= (1ULL << b);
         }
     }
 
@@ -277,17 +293,14 @@ bool SRReceiver::pump() {
     msg.params.total_chunks = static_cast<uint16_t>(total_chunks);
     msg.params.max_inflight = cumulative;
     msg.chunk_bitmap_words = static_cast<uint16_t>(word_count);
-    for (uint32_t i = 0; i < word_count; ++i) {
-        msg.chunk_bitmap[i] = words[i];
-    }
-    // Encode up to 4 gaps
-    msg.num_gaps = 0;
+    for (uint32_t i = 0; i < word_count; ++i) msg.chunk_bitmap[i] = words[i];
+
     uint16_t gaps_found = 0;
     for (uint32_t c = cumulative + 1; c < total_chunks && gaps_found < 4; ++c) {
-        if (!ctx->frontend_bitmap->is_chunk_complete(c)) {
+        if (!chunk_done_[c]) {
             uint16_t start = static_cast<uint16_t>(c);
             uint16_t len = 0;
-            while (c < total_chunks && !ctx->frontend_bitmap->is_chunk_complete(c) && len < UINT16_MAX) {
+            while (c < total_chunks && !chunk_done_[c] && len < UINT16_MAX) {
                 ++len; ++c;
             }
             msg.gap_start[gaps_found] = start;
@@ -297,32 +310,26 @@ bool SRReceiver::pump() {
     }
     msg.num_gaps = gaps_found;
 
-    if (missing_len > 0) {
-        msg.msg_type = ControlMsgType::SR_NACK;
-        msg.params.rto_ms = missing_start;        // reuse for start chunk
-        msg.params.rtt_alpha_ms = missing_len;    // reuse for length
+    if (std::all_of(chunk_done_.begin(), chunk_done_.end(), [](bool v){ return v; })) {
+        msg.msg_type = ControlMsgType::COMPLETE_ACK;
         conn_->tcp_server->send_message(msg);
-        std::cout << "[SR][Receiver] NACK start=" << missing_start
-                  << " len=" << missing_len << std::endl;
-        stats_.nacks_sent++;
-    } else {
-        if (ctx->frontend_bitmap->get_total_chunks_completed() >= total_chunks) {
-            // All chunks complete: send completion and signal done
-            msg.msg_type = ControlMsgType::COMPLETE_ACK;
-            conn_->tcp_server->send_message(msg);
-            std::cout << "[SR][Receiver] COMPLETE_ACK\n";
-            stats_.acks_sent++;
-            return true;
-        } else {
-            msg.msg_type = ControlMsgType::SR_ACK;
-            conn_->tcp_server->send_message(msg);
-            std::cout << "[SR][Receiver] ACK cum=" << cumulative << std::endl;
-            stats_.acks_sent++;
-        }
+        stats_.acks_sent++;
+        return;
     }
 
-    // Keep running until explicitly marked complete by COMPLETE_ACK
-    return (ctx->frontend_bitmap->get_total_chunks_completed() >= total_chunks);
+    if (gaps_found > 0) {
+        msg.msg_type = ControlMsgType::SR_NACK;
+        msg.params.rto_ms = msg.gap_start[0];
+        msg.params.rtt_alpha_ms = msg.gap_len[0];
+        conn_->tcp_server->send_message(msg);
+        stats_.nacks_sent++;
+        std::cout << "[SR][Receiver] NACK start=" << msg.gap_start[0]
+                  << " len=" << msg.gap_len[0] << std::endl;
+    } else {
+        msg.msg_type = ControlMsgType::SR_ACK;
+        conn_->tcp_server->send_message(msg);
+        stats_.acks_sent++;
+        std::cout << "[SR][Receiver] ACK cum=" << cumulative << std::endl;
+    }
 }
-
 } // namespace sdr::reliability

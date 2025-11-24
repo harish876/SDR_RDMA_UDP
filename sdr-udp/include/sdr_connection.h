@@ -3,6 +3,7 @@
 #include "sdr_backend.h"
 #include "sdr_frontend.h"
 #include "tcp_control.h"
+#include "sdr_pipeline.h"
 #include <cstdint>
 #include <memory>
 #include <array>
@@ -91,6 +92,21 @@ private:
     // Socket file descriptors
     int tcp_socket_fd_;
     int udp_socket_fd_;
+
+    // SDR pipeline components
+    std::shared_ptr<SDRPipeline> pipeline_;
+
+public:
+    std::shared_ptr<SDRPipeline> get_pipeline() {
+        if (!pipeline_) {
+            pipeline_ = std::make_shared<SDRPipeline>(params_.num_channels ? params_.num_channels : 1);
+        }
+        return pipeline_;
+    }
+    void set_reliability_callbacks(const ReliabilityCallbacks& cb) {
+        auto p = get_pipeline();
+        p->set_callbacks(cb);
+    }
 };
 
 

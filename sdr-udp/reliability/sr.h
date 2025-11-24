@@ -70,6 +70,13 @@ private:
     SRStats stats_{};
     std::unique_ptr<SDRRecvHandle, void(*)(SDRRecvHandle*)> recv_handle_{nullptr, [](SDRRecvHandle* h){ delete h; }};
     SDRConnection* conn_{nullptr};
+    std::vector<bool> chunk_done_;
+    uint32_t total_chunks_{0};
+
+    void emit_control();
+    bool handle_packet(uint32_t msg_id, uint32_t packet);
+    void handle_chunk_complete(uint32_t msg_id, uint32_t chunk);
+    void handle_message_complete(uint32_t msg_id);
 };
 
 } // namespace sdr::reliability

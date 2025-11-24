@@ -52,6 +52,7 @@ private:
     ECStats stats_{};
     std::unique_ptr<SDRRecvHandle, void(*)(SDRRecvHandle*)> recv_handle_{nullptr, [](SDRRecvHandle* h){ delete h; }};
     SDRConnection* conn_{nullptr};
+    std::vector<bool> chunk_done_;
 
     // Receiver-side bookkeeping
     uint64_t data_bytes_{0};
@@ -62,6 +63,10 @@ private:
     uint32_t parity_chunks_{0};
     uint32_t stripes_{0};
     uint32_t decode_attempts_{0};
+
+    bool handle_packet(uint32_t msg_id, uint32_t packet);
+    void handle_chunk_complete(uint32_t msg_id, uint32_t chunk);
+    void handle_message_complete(uint32_t msg_id);
 };
 
 } // namespace sdr::reliability

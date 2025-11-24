@@ -17,6 +17,7 @@ set(SDR_SOURCES
     src/config_parser.cpp
     reliability/sr.cpp
     reliability/ec.cpp
+    src/sdr_pipeline.cpp
 )
 
 # Create library

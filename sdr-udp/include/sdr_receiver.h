@@ -53,6 +53,13 @@ private:
     
     void write_packet_to_buffer(MessageContext* msg_ctx, uint32_t packet_offset,
                                 const uint8_t* payload, size_t payload_len);
+
+    bool dispatch_to_pipeline(const SDRPacketHeader& header) {
+        if (connection_) {
+            return connection_->get_pipeline()->submit_packet(header);
+        }
+        return false;
+    }
 };
 
 // Implementation
@@ -212,7 +219,11 @@ inline void UDPReceiver::receiver_thread_func(size_t worker_idx) {
                       << " bytes, expected " << expected_payload_len << std::endl;
         }
         
-        // Process packet
+        // Pass through SDR pipeline (drop/delay + bitmap/ callbacks)
+        if (!dispatch_to_pipeline(header)) {
+            continue;
+        }
+        // Process packet (copy payload etc.)
         process_packet(header, payload, payload_len);
     }
     
@@ -242,19 +253,8 @@ inline void UDPReceiver::process_packet(const SDRPacketHeader& header,
         return;
     }
     
-    // Skip duplicate packet writes to avoid extra memcpy
-    if (msg_ctx->backend_bitmap && msg_ctx->backend_bitmap->is_packet_received(header.packet_offset)) {
-        return;
-    }
-
     // Write packet to buffer
     write_packet_to_buffer(msg_ctx, header.packet_offset, payload, payload_len);
-    
-    // Update backend packet bitmap
-    if (msg_ctx->backend_bitmap) {
-        msg_ctx->backend_bitmap->set_packet_received(header.packet_offset);
-        // Removed verbose logging - progress is shown via chunk bitmap display
-    }
 }
 
 inline void UDPReceiver::write_packet_to_buffer(MessageContext* msg_ctx, 
