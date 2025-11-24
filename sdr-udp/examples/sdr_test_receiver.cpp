@@ -141,7 +141,8 @@ int main(int argc, char* argv[]) {
         ec_cfg.fallback_timeout_ms = config.get_uint32("ec_fallback_timeout_ms", 0);
         ec_cfg.data_bytes = message_size;
         // compute total length with parity
-        uint32_t chunk_bytes = params.mtu_bytes * params.packets_per_chunk;
+        uint32_t capped_mtu = std::min<uint32_t>(params.mtu_bytes, SDRPacket::MAX_PAYLOAD_SIZE);
+        uint32_t chunk_bytes = capped_mtu * params.packets_per_chunk;
         if (chunk_bytes == 0) chunk_bytes = 1;
         uint32_t data_chunks = static_cast<uint32_t>((message_size + chunk_bytes - 1) / chunk_bytes);
         uint32_t stripes = (data_chunks + ec_cfg.k_data - 1) / ec_cfg.k_data;
