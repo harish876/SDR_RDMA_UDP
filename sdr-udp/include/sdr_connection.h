@@ -86,6 +86,7 @@ private:
     std::array<std::unique_ptr<MessageContext>, MAX_MESSAGES> msg_table_;
     mutable std::mutex msg_table_mutex_;  // Protects message table
     std::vector<uint8_t> null_sink_;      // Single-byte null sink for late packets
+    std::array<uint32_t, MAX_MESSAGES> generation_counters_{}; // rotating generations per msg_id
     
     // Socket file descriptors
     int tcp_socket_fd_;
@@ -98,6 +99,7 @@ inline ConnectionContext::ConnectionContext()
       tcp_socket_fd_(-1), udp_socket_fd_(-1) {
     memset(&params_, 0, sizeof(params_));
     null_sink_.resize(1, 0);
+    generation_counters_.fill(1); // start generations at 1
 }
 
 inline ConnectionContext::~ConnectionContext() {
@@ -137,8 +139,10 @@ inline MessageContext* ConnectionContext::allocate_message_slot(uint32_t msg_id,
     }
     
     msg_ptr = std::make_unique<MessageContext>();
+    // Rotate generation to avoid late packet corruption
+    uint32_t rotated_gen = generation_counters_[msg_id]++;
     msg_ptr->msg_id = msg_id;
-    msg_ptr->generation = generation;
+    msg_ptr->generation = rotated_gen;
     msg_ptr->state = MessageState::ACTIVE;
     msg_ptr->connection_params = params_;
     

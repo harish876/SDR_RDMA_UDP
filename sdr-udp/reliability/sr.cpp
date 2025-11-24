@@ -40,6 +40,7 @@ int SRSender::poll() {
     const ConnectionParams& params = ctx->get_params();
     const uint32_t mtu = params.mtu_bytes;
     const uint16_t ppc = params.packets_per_chunk;
+    const uint32_t effective_rto_ms = cfg_.rto_ms ? cfg_.rto_ms : (cfg_.base_rtt_ms + cfg_.alpha_ms);
 
     auto send_packets_range = [&](uint32_t start_packet, uint32_t packet_count) {
         std::cout << "[SR][Sender] Retransmitting packets " << start_packet
@@ -115,7 +116,7 @@ int SRSender::poll() {
     auto apply_bitmap = [&](const ControlMessage& msg) {
         uint32_t words = msg.chunk_bitmap_words;
         uint32_t max_chunks = total_chunks_;
-        for (uint32_t w = 0; w < words && w < 4; ++w) {
+        for (uint32_t w = 0; w < words && w < 8; ++w) {
             uint64_t word = msg.chunk_bitmap[w];
             for (uint32_t bit = 0; bit < 64; ++bit) {
                 uint32_t chunk_id = w * 64 + bit;
@@ -138,7 +139,7 @@ int SRSender::poll() {
             for (uint32_t c = 0; c < total_chunks_; ++c) {
                 if (chunk_acked_[c]) continue;
                 auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_tx_[c]).count();
-                if (elapsed > static_cast<long>(cfg_.rto_ms)) {
+                if (elapsed > static_cast<long>(effective_rto_ms)) {
                     std::cout << "[SR][Sender] RTO retransmit chunk " << c << std::endl;
                     retransmit_range(c, 1);
                     last_tx_[c] = now;
@@ -152,6 +153,7 @@ int SRSender::poll() {
             std::cout << "[SR][Sender] Received SR_ACK cum=" << cum_chunk
                       << " total=" << msg.params.total_chunks << std::endl;
             apply_bitmap(msg);
+            stats_.acks_sent++;
             retransmit_missing_from_bitmap(4); // send a few missing chunks per control tick
             if (cum_chunk + 1 >= msg.params.total_chunks) {
                 return 0;
@@ -162,16 +164,22 @@ int SRSender::poll() {
             uint32_t missing_len = msg.params.rtt_alpha_ms;   // reused for length
             std::cout << "[SR][Sender] Received SR_NACK start=" << start_chunk
                       << " len=" << missing_len << std::endl;
-            if (missing_len == 0) missing_len = 1;
-            // Retransmit only the unacked chunks in the indicated window, capped
-            uint32_t sent = 0;
-            uint32_t end_chunk = std::min<uint32_t>(start_chunk + missing_len, total_chunks_);
-            for (uint32_t c = start_chunk; c < end_chunk && sent < 8; ++c) {
-                if (chunk_acked_[c]) continue;
-                retransmit_range(c, 1);
-                sent++;
-            }
+            stats_.nacks_sent++;
             apply_bitmap(msg);
+            // retransmit missing chunks based on bitmap state, throttled
+            // walk reported gaps
+            uint32_t gap_limit = 8;
+            uint32_t sent = 0;
+            for (uint16_t i = 0; i < msg.num_gaps && sent < gap_limit; ++i) {
+                uint32_t gs = msg.gap_start[i];
+                uint32_t gl = msg.gap_len[i];
+                uint32_t endc = std::min<uint32_t>(gs + gl, total_chunks_);
+                for (uint32_t c = gs; c < endc && sent < gap_limit; ++c) {
+                    if (chunk_acked_[c]) continue;
+                    retransmit_range(c, 1);
+                    sent++;
+                }
+            }
             retransmit_missing_from_bitmap(4);
         } else if (msg.msg_type == ControlMsgType::COMPLETE_ACK) {
             std::cout << "[SR][Sender] COMPLETE_ACK\n";
@@ -205,7 +213,8 @@ bool SRReceiver::pump() {
     static auto last_ctrl = std::chrono::steady_clock::now();
     auto now = std::chrono::steady_clock::now();
     auto ctrl_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_ctrl).count();
-    if (ctrl_elapsed < static_cast<long>(std::max<uint32_t>(cfg_.nack_delay_ms, 100u))) {
+    uint32_t ctrl_interval = cfg_.nack_delay_ms ? cfg_.nack_delay_ms : std::max<uint32_t>(cfg_.base_rtt_ms / 2, 50u);
+    if (ctrl_elapsed < static_cast<long>(ctrl_interval)) {
         return false; // limit control emission rate
     }
     last_ctrl = now;
@@ -226,19 +235,19 @@ bool SRReceiver::pump() {
     }
     if (cumulative > 0) cumulative -= 1; // last completed contiguous index
 
-    // Build chunk bitmap snapshot (up to 4 words)
-    uint64_t words[4] = {0,0,0,0};
+    // Build chunk bitmap snapshot (up to 8 words -> 512 chunks)
+    uint64_t words[8] = {0,0,0,0,0,0,0,0};
     uint32_t word_count = (total_chunks + 63) / 64;
-    if (word_count > 4) word_count = 4;
-    for (uint32_t c = 0; c < total_chunks && c < 256; ++c) {
+    if (word_count > 8) word_count = 8;
+    for (uint32_t c = 0; c < total_chunks && c < 512; ++c) {
         if (ctx->frontend_bitmap->is_chunk_complete(c)) {
             uint32_t w = c / 64;
             uint32_t b = c % 64;
-            if (w < 4) words[w] |= (1ULL << b);
+            if (w < 8) words[w] |= (1ULL << b);
         }
     }
 
-    // Find first gap after cumulative
+    // Find first gap after cumulative (no cap; sender will throttle retransmits)
     uint32_t missing_start = 0;
     uint32_t missing_len = 0;
     for (uint32_t c = cumulative + 1; c < total_chunks; ++c) {
@@ -263,6 +272,22 @@ bool SRReceiver::pump() {
     for (uint32_t i = 0; i < word_count; ++i) {
         msg.chunk_bitmap[i] = words[i];
     }
+    // Encode up to 4 gaps
+    msg.num_gaps = 0;
+    uint16_t gaps_found = 0;
+    for (uint32_t c = cumulative + 1; c < total_chunks && gaps_found < 4; ++c) {
+        if (!ctx->frontend_bitmap->is_chunk_complete(c)) {
+            uint16_t start = static_cast<uint16_t>(c);
+            uint16_t len = 0;
+            while (c < total_chunks && !ctx->frontend_bitmap->is_chunk_complete(c) && len < UINT16_MAX) {
+                ++len; ++c;
+            }
+            msg.gap_start[gaps_found] = start;
+            msg.gap_len[gaps_found] = len;
+            gaps_found++;
+        }
+    }
+    msg.num_gaps = gaps_found;
 
     if (missing_len > 0) {
         msg.msg_type = ControlMsgType::SR_NACK;

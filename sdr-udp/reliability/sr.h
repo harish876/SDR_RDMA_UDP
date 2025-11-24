@@ -13,6 +13,8 @@ struct SRConfig {
     uint32_t rto_ms{0};            // Base RTO (RTT + alpha*RTT)
     uint32_t nack_delay_ms{0};     // Delay before emitting NACK
     uint16_t max_inflight_chunks{0};
+    uint32_t base_rtt_ms{100};     // Estimated RTT
+    uint32_t alpha_ms{100};        // RTT margin
 };
 
 struct SRStats {
