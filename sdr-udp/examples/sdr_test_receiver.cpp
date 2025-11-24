@@ -181,7 +181,8 @@ int main(int argc, char* argv[]) {
     size_t total_chunks = 0;
     size_t iterations = 0;
     const size_t MAX_ITERATIONS = 1000000;
-    const std::chrono::seconds TIMEOUT_SECONDS(30);
+    // Allow longer for EC mode to accommodate retransmissions/decode cycles
+    const std::chrono::seconds TIMEOUT_SECONDS(mode == Mode::EC ? 120 : 30);
     
     const uint8_t* chunk_bitmap = nullptr;
     size_t bitmap_len = 0;
