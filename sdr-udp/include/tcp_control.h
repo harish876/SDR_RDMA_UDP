@@ -48,10 +48,10 @@ struct ControlMessage {
     uint32_t connection_id;          // Connection identifier
     ConnectionParams params;         // Connection parameters
     uint16_t chunk_bitmap_words;     // Number of 64-bit words used in chunk_bitmap
-    uint64_t chunk_bitmap[8];        // Chunk bitmap snapshot (up to 512 chunks)
+    uint64_t chunk_bitmap[16];       // Chunk bitmap snapshot (up to 1024 chunks)
     uint16_t num_gaps;               // Number of gaps encoded
-    uint16_t gap_start[4];           // Gap starts (chunk ids)
-    uint16_t gap_len[4];             // Gap lengths
+    uint16_t gap_start[16];          // Gap starts (chunk ids)
+    uint16_t gap_len[16];            // Gap lengths
     
     // Serialization helpers
     size_t serialize(uint8_t* buffer, size_t buffer_size) const;

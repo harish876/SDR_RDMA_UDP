@@ -120,6 +120,37 @@ int ECSender::poll() {
         close(udp_socket);
     };
 
+    auto apply_bitmap = [&](const ControlMessage& msg) {
+        uint32_t words = msg.chunk_bitmap_words;
+        uint32_t max_chunks = data_chunks + (msg.chunk_bitmap_words * 64 > data_chunks ? msg.chunk_bitmap_words * 64 - data_chunks : 0);
+        for (uint32_t w = 0; w < words && w < 16; ++w) {
+            uint64_t word = msg.chunk_bitmap[w];
+            for (uint32_t bit = 0; bit < 64; ++bit) {
+                uint32_t chunk_id = w * 64 + bit;
+                if (chunk_id >= data_chunks) break;
+                if (word & (1ULL << bit)) {
+                    // mark acked by skipping retransmit
+                }
+            }
+        }
+    };
+
+    auto retransmit_missing_bitmap = [&](const ControlMessage& msg, uint32_t limit) {
+        uint32_t sent = 0;
+        uint32_t words = msg.chunk_bitmap_words;
+        for (uint32_t w = 0; w < words && sent < limit && w < 16; ++w) {
+            uint64_t word = msg.chunk_bitmap[w];
+            for (uint32_t bit = 0; bit < 64 && sent < limit; ++bit) {
+                uint32_t chunk_id = w * 64 + bit;
+                if (chunk_id >= data_chunks) break;
+                if ((word & (1ULL << bit)) == 0) {
+                    retransmit_chunk(chunk_id);
+                    sent++;
+                }
+            }
+        }
+    };
+
     while (true) {
         ControlMessage msg;
         if (!conn_->tcp_client->receive_message(msg)) {
@@ -138,6 +169,7 @@ int ECSender::poll() {
                     retransmit_chunk(c);
                 }
             }
+            retransmit_missing_bitmap(msg, 8);
         } else if (msg.msg_type == ControlMsgType::COMPLETE_ACK) {
             return 0;
         }
@@ -220,7 +252,7 @@ bool ECReceiver::try_decode() {
             msg.num_gaps = 0;
             // collapse missing_data into gaps
             size_t idx = 0;
-            while (idx < missing_data.size() && msg.num_gaps < 4) {
+            while (idx < missing_data.size() && msg.num_gaps < 16) {
                 uint32_t start = missing_data[idx];
                 uint32_t lenrun = 1;
                 idx++;
