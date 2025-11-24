@@ -9,19 +9,13 @@ namespace sdr::reliability {
 int ECSender::encode_and_send(SDRConnection* conn, const void* buffer, size_t length) {
     conn_ = conn;
     sends_.clear();
-    // Ensure we have params from CTS
-    ControlMessage cts_msg;
-    if (conn->tcp_client && conn->tcp_client->receive_message(cts_msg) && cts_msg.msg_type == ControlMsgType::CTS) {
-        conn->connection_ctx->initialize(cts_msg.connection_id, cts_msg.params);
-    }
     const uint64_t data_bytes = cfg_.data_bytes ? cfg_.data_bytes : length;
     const uint16_t k = cfg_.k_data ? cfg_.k_data : 4;
     const uint16_t m = cfg_.m_parity ? cfg_.m_parity : 2;
     const ConnectionParams& params = conn->connection_ctx->get_params();
-    uint32_t chunk_bytes = params.mtu_bytes * params.packets_per_chunk;
-    if (chunk_bytes == 0) {
-        chunk_bytes = params.mtu_bytes ? params.mtu_bytes : SDRPacket::MAX_PAYLOAD_SIZE;
-    }
+    uint32_t mtu = params.mtu_bytes ? params.mtu_bytes : SDRPacket::MAX_PAYLOAD_SIZE;
+    uint16_t ppc = params.packets_per_chunk ? params.packets_per_chunk : 32;
+    uint32_t chunk_bytes = mtu * ppc;
     uint32_t data_chunks = static_cast<uint32_t>((data_bytes + chunk_bytes - 1) / chunk_bytes);
     uint32_t stripes = (data_chunks + k - 1) / k;
     uint32_t parity_chunks = stripes * m;
