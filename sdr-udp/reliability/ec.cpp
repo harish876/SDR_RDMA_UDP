@@ -14,6 +14,9 @@ int ECSender::encode_and_send(SDRConnection* conn, const void* buffer, size_t le
     const uint16_t m = cfg_.m_parity ? cfg_.m_parity : 2;
     const ConnectionParams& params = conn->connection_ctx->get_params();
     uint32_t mtu = params.mtu_bytes ? params.mtu_bytes : SDRPacket::MAX_PAYLOAD_SIZE;
+    if (mtu > SDRPacket::MAX_PAYLOAD_SIZE) {
+        mtu = SDRPacket::MAX_PAYLOAD_SIZE;
+    }
     uint16_t ppc = params.packets_per_chunk ? params.packets_per_chunk : 32;
     uint32_t chunk_bytes = mtu * ppc;
     uint32_t data_chunks = static_cast<uint32_t>((data_bytes + chunk_bytes - 1) / chunk_bytes);
@@ -74,7 +77,12 @@ int ECReceiver::post_receive(SDRConnection* conn, void* buffer, size_t length) {
     data_bytes_ = cfg_.data_bytes ? cfg_.data_bytes : length;
     k_ = cfg_.k_data ? cfg_.k_data : 4;
     m_ = cfg_.m_parity ? cfg_.m_parity : 2;
-    chunk_bytes_ = conn->connection_ctx->get_params().mtu_bytes * conn->connection_ctx->get_params().packets_per_chunk;
+    uint32_t mtu = conn->connection_ctx->get_params().mtu_bytes ? conn->connection_ctx->get_params().mtu_bytes : SDRPacket::MAX_PAYLOAD_SIZE;
+    if (mtu > SDRPacket::MAX_PAYLOAD_SIZE) {
+        mtu = SDRPacket::MAX_PAYLOAD_SIZE;
+    }
+    uint16_t ppc = conn->connection_ctx->get_params().packets_per_chunk ? conn->connection_ctx->get_params().packets_per_chunk : 32;
+    chunk_bytes_ = mtu * ppc;
     if (chunk_bytes_ == 0) chunk_bytes_ = 1;
     data_chunks_ = static_cast<uint32_t>((data_bytes_ + chunk_bytes_ - 1) / chunk_bytes_);
     stripes_ = (data_chunks_ + k_ - 1) / k_;
