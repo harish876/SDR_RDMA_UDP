@@ -41,6 +41,7 @@ int SRSender::poll() {
     const uint32_t mtu = params.mtu_bytes;
     const uint16_t ppc = params.packets_per_chunk;
     const uint32_t effective_rto_ms = cfg_.rto_ms ? cfg_.rto_ms : (cfg_.base_rtt_ms + cfg_.alpha_ms);
+    const uint32_t guard_ms = 50; // suppress back-to-back retransmits
 
     auto send_packets_range = [&](uint32_t start_packet, uint32_t packet_count) {
         std::cout << "[SR][Sender] Retransmitting packets " << start_packet
@@ -105,8 +106,11 @@ int SRSender::poll() {
     };
     auto retransmit_missing_from_bitmap = [&](uint32_t limit) {
         uint32_t sent = 0;
+        auto now = std::chrono::steady_clock::now();
         for (uint32_t c = 0; c < total_chunks_ && sent < limit; ++c) {
             if (chunk_acked_[c]) continue;
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_tx_[c]).count();
+            if (elapsed < static_cast<long>(guard_ms)) continue; // recently retransmitted
             retransmit_range(c, 1);
             sent++;
         }
@@ -176,6 +180,9 @@ int SRSender::poll() {
                 uint32_t endc = std::min<uint32_t>(gs + gl, total_chunks_);
                 for (uint32_t c = gs; c < endc && sent < gap_limit; ++c) {
                     if (chunk_acked_[c]) continue;
+                    auto now = std::chrono::steady_clock::now();
+                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_tx_[c]).count();
+                    if (elapsed < static_cast<long>(guard_ms)) continue; // recently retransmitted
                     retransmit_range(c, 1);
                     sent++;
                 }
@@ -183,6 +190,7 @@ int SRSender::poll() {
             retransmit_missing_from_bitmap(4);
         } else if (msg.msg_type == ControlMsgType::COMPLETE_ACK) {
             std::cout << "[SR][Sender] COMPLETE_ACK\n";
+            stats_.acks_sent++;
             return 0;
         } else if (msg.msg_type == ControlMsgType::INCOMPLETE_NACK) {
             return -1;
