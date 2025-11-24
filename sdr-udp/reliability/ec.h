@@ -12,6 +12,7 @@ struct ECConfig {
     uint16_t k_data{0};
     uint16_t m_parity{0};
     uint32_t fallback_timeout_ms{0};
+    uint64_t data_bytes{0}; // original data length (without parity)
 };
 
 struct ECStats {
@@ -49,6 +50,15 @@ private:
     ECStats stats_{};
     std::unique_ptr<SDRRecvHandle, void(*)(SDRRecvHandle*)> recv_handle_{nullptr, [](SDRRecvHandle* h){ delete h; }};
     SDRConnection* conn_{nullptr};
+
+    // Receiver-side bookkeeping
+    uint64_t data_bytes_{0};
+    uint32_t chunk_bytes_{0};
+    uint16_t k_{0};
+    uint16_t m_{0};
+    uint32_t data_chunks_{0};
+    uint32_t parity_chunks_{0};
+    uint32_t stripes_{0};
 };
 
 } // namespace sdr::reliability

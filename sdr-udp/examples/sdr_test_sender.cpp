@@ -96,9 +96,10 @@ int main(int argc, char* argv[]) {
         start_time = end_time; // so common footer uses same duration
     } else if (mode == Mode::EC) {
         ECConfig ec_cfg{};
-        ec_cfg.k_data = 0;
-        ec_cfg.m_parity = 0;
+        ec_cfg.k_data = static_cast<uint16_t>(message_size > 0 ? 4 : 4);
+        ec_cfg.m_parity = static_cast<uint16_t>(2);
         ec_cfg.fallback_timeout_ms = 0;
+        ec_cfg.data_bytes = message_size;
         ECSender ec_sender(ec_cfg);
         rc = ec_sender.encode_and_send(conn, send_buffer.data(), message_size);
         if (rc == 0) {

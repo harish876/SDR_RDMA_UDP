@@ -21,6 +21,11 @@ set(SDR_SOURCES
 
 # Create library
 add_library(sdr_udp ${SDR_SOURCES})
+find_library(ISAL_LIB isal)
+if(ISAL_LIB)
+    target_link_libraries(sdr_udp ${ISAL_LIB})
+    target_compile_definitions(sdr_udp PRIVATE HAS_ISAL=1)
+endif()
 
 # Examples
 add_executable(sdr_test_receiver examples/sdr_test_receiver.cpp)
@@ -40,4 +45,3 @@ install(TARGETS sdr_udp sdr_test_receiver sdr_test_sender
         RUNTIME DESTINATION bin)
 
 install(DIRECTORY include/ DESTINATION include/sdr)
-

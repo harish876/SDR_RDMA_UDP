@@ -136,11 +136,20 @@ int main(int argc, char* argv[]) {
         active_handle = sr_receiver->handle();
     } else if (mode == Mode::EC) {
         ECConfig ec_cfg{};
-        ec_cfg.k_data = static_cast<uint16_t>(config.get_uint32("ec_k_data", 0));
-        ec_cfg.m_parity = static_cast<uint16_t>(config.get_uint32("ec_m_parity", 0));
+        ec_cfg.k_data = static_cast<uint16_t>(config.get_uint32("ec_k_data", 4));
+        ec_cfg.m_parity = static_cast<uint16_t>(config.get_uint32("ec_m_parity", 2));
         ec_cfg.fallback_timeout_ms = config.get_uint32("ec_fallback_timeout_ms", 0);
+        ec_cfg.data_bytes = message_size;
+        // compute total length with parity
+        uint32_t chunk_bytes = params.mtu_bytes * params.packets_per_chunk;
+        if (chunk_bytes == 0) chunk_bytes = 1;
+        uint32_t data_chunks = static_cast<uint32_t>((message_size + chunk_bytes - 1) / chunk_bytes);
+        uint32_t stripes = (data_chunks + ec_cfg.k_data - 1) / ec_cfg.k_data;
+        uint32_t parity_chunks = stripes * ec_cfg.m_parity;
+        size_t total_length = static_cast<size_t>(data_chunks + parity_chunks) * chunk_bytes;
+        recv_buffer.resize(total_length);
         ec_receiver.emplace(ec_cfg);
-        if (ec_receiver->post_receive(conn, recv_buffer.data(), message_size) != 0) {
+        if (ec_receiver->post_receive(conn, recv_buffer.data(), recv_buffer.size()) != 0) {
             std::cerr << "[Receiver] EC post_receive failed\n";
             sdr_disconnect(conn);
             sdr_ctx_destroy(ctx);
@@ -149,7 +158,7 @@ int main(int argc, char* argv[]) {
         active_handle = ec_receiver->handle();
     } else {
         SDRRecvHandle* raw = nullptr;
-        if (sdr_recv_post(conn, recv_buffer.data(), message_size, &raw) != 0) {
+        if (sdr_recv_post(conn, recv_buffer.data(), recv_buffer.size(), &raw) != 0) {
             std::cerr << "[Receiver] Failed to post receive" << std::endl;
             sdr_disconnect(conn);
             sdr_ctx_destroy(ctx);
