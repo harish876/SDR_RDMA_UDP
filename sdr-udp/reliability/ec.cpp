@@ -1,6 +1,13 @@
 #include "reliability/ec.h"
 #include <iostream>
 #include <cstring>
+#include <algorithm>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <errno.h>
 
 #ifdef HAS_ISAL
 #include <isa-l/erasure_code.h>
@@ -73,12 +80,69 @@ int ECSender::encode_and_send(SDRConnection* conn, const void* buffer, size_t le
 }
 
 int ECSender::poll() {
-    int rc = 0;
-    for (auto& h : sends_) {
-        rc = sdr_send_poll(h.get());
-        if (rc != 0) break;
+    if (sends_.empty() || !conn_ || !conn_->tcp_client) {
+        return -1;
     }
-    return rc;
+    auto* handle = sends_.front().get();
+    const ConnectionParams& params = conn_->connection_ctx->get_params();
+    uint32_t mtu = params.mtu_bytes ? params.mtu_bytes : SDRPacket::MAX_PAYLOAD_SIZE;
+    if (mtu > SDRPacket::MAX_PAYLOAD_SIZE) mtu = SDRPacket::MAX_PAYLOAD_SIZE;
+    uint16_t ppc = params.packets_per_chunk ? params.packets_per_chunk : 32;
+    uint32_t chunk_bytes = mtu * ppc;
+    uint32_t data_chunks = static_cast<uint32_t>((cfg_.data_bytes + chunk_bytes - 1) / chunk_bytes);
+
+    auto retransmit_chunk = [&](uint32_t chunk_id) {
+        int udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
+        if (udp_socket < 0) return;
+        struct sockaddr_in server_addr;
+        std::memset(&server_addr, 0, sizeof(server_addr));
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(params.udp_server_port);
+        inet_pton(AF_INET, params.udp_server_ip, &server_addr.sin_addr);
+
+        const uint8_t* data = static_cast<const uint8_t*>(handle->user_buffer);
+        for (uint16_t pkt = 0; pkt < ppc; ++pkt) {
+            uint32_t packet_offset = chunk_id * ppc + pkt;
+            size_t data_offset = static_cast<size_t>(packet_offset) * mtu;
+            if (data_offset >= handle->buffer_size) break;
+            size_t remaining = handle->buffer_size - data_offset;
+            size_t pkt_len = std::min(static_cast<size_t>(mtu), remaining);
+            SDRPacket* packet = SDRPacket::create_data_packet(
+                params.transfer_id, handle->msg_id, packet_offset, ppc,
+                data + data_offset, pkt_len);
+            if (!packet) break;
+            packet->header.chunk_seq = packet->header.get_chunk_id();
+            size_t total_sz = sizeof(SDRPacketHeader) + pkt_len;
+            packet->header.to_network_order();
+            sendto(udp_socket, packet, total_sz, 0,
+                   (struct sockaddr*)&server_addr, sizeof(server_addr));
+            SDRPacket::destroy(packet);
+        }
+        close(udp_socket);
+    };
+
+    while (true) {
+        ControlMessage msg;
+        if (!conn_->tcp_client->receive_message(msg)) {
+            // Timeout, check completion
+            int rc = sdr_send_poll(handle);
+            if (rc == 0) return 0;
+            continue;
+        }
+        if (msg.msg_type == ControlMsgType::EC_ACK) {
+            return 0;
+        } else if (msg.msg_type == ControlMsgType::EC_NACK) {
+            for (uint16_t i = 0; i < msg.num_gaps; ++i) {
+                uint32_t start = msg.gap_start[i];
+                uint32_t len = msg.gap_len[i];
+                for (uint32_t c = start; c < start + len && c < data_chunks; ++c) {
+                    retransmit_chunk(c);
+                }
+            }
+        } else if (msg.msg_type == ControlMsgType::COMPLETE_ACK) {
+            return 0;
+        }
+    }
 }
 
 int ECReceiver::post_receive(SDRConnection* conn, void* buffer, size_t length) {
@@ -136,9 +200,40 @@ bool ECReceiver::try_decode() {
     }
     if (missing_data.empty()) {
         stats_.decode_success++;
+        // Send EC_ACK
+        if (conn_ && conn_->tcp_server) {
+            ControlMessage msg{};
+            msg.magic = ControlMessage::MAGIC_VALUE;
+            msg.msg_type = ControlMsgType::EC_ACK;
+            msg.connection_id = conn_->connection_ctx->get_connection_id();
+            conn_->tcp_server->send_message(msg);
+        }
         return true;
     }
     if (missing_data.size() > m_) {
+        // Send EC_NACK with missing ranges to request SR fallback
+        if (conn_ && conn_->tcp_server) {
+            ControlMessage msg{};
+            msg.magic = ControlMessage::MAGIC_VALUE;
+            msg.msg_type = ControlMsgType::EC_NACK;
+            msg.connection_id = conn_->connection_ctx->get_connection_id();
+            msg.num_gaps = 0;
+            // collapse missing_data into gaps
+            size_t idx = 0;
+            while (idx < missing_data.size() && msg.num_gaps < 4) {
+                uint32_t start = missing_data[idx];
+                uint32_t lenrun = 1;
+                idx++;
+                while (idx < missing_data.size() && missing_data[idx] == start + lenrun) {
+                    lenrun++;
+                    idx++;
+                }
+                msg.gap_start[msg.num_gaps] = static_cast<uint16_t>(start);
+                msg.gap_len[msg.num_gaps] = static_cast<uint16_t>(lenrun);
+                msg.num_gaps++;
+            }
+            conn_->tcp_server->send_message(msg);
+        }
         stats_.fallback_sr++;
         return false;
     }
@@ -185,6 +280,13 @@ bool ECReceiver::try_decode() {
         ec_encode_data(chunk_bytes_, k_, 1, gftbl.data(), src_ptrs.data(), &recover_ptrs[mi]);
     }
     stats_.decode_success++;
+    if (conn_ && conn_->tcp_server) {
+        ControlMessage msg{};
+        msg.magic = ControlMessage::MAGIC_VALUE;
+        msg.msg_type = ControlMsgType::EC_ACK;
+        msg.connection_id = conn_->connection_ctx->get_connection_id();
+        conn_->tcp_server->send_message(msg);
+    }
     return true;
 #else
     stats_.fallback_sr++;
