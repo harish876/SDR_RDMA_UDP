@@ -405,16 +405,6 @@ int main(int argc, char* argv[]) {
             }
         }
         
-        if (data_valid && mode == Mode::EC && ec_decoded_success && load_handle_ctx() && load_handle_ctx()->backend_bitmap) {
-            // Mark all chunks complete in display to reflect decode
-            MessageContext* ctx = load_handle_ctx();
-            for (uint32_t c = 0; c < ctx->total_chunks; ++c) {
-                ctx->backend_bitmap->set_packet_received(c * ctx->packets_per_chunk); // touch bitmap
-            }
-            chunks_received = ctx->total_chunks;
-            display_progress();
-        }
-
         if (data_valid) {
             std::cout << "[Receiver] Data verification: PASSED" << std::endl;
         } else {
