@@ -155,6 +155,10 @@ int main(int argc, char* argv[]) {
             sdr_ctx_destroy(ctx);
             return 1;
         }
+        // override total_chunks for progress display
+        if (ec_receiver->handle() && ec_receiver->handle()->msg_ctx) {
+            ec_receiver->handle()->msg_ctx->total_chunks = static_cast<uint32_t>(data_chunks + parity_chunks);
+        }
         active_handle = ec_receiver->handle();
     } else {
         SDRRecvHandle* raw = nullptr;
