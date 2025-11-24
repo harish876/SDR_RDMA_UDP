@@ -100,6 +100,7 @@ int main(int argc, char* argv[]) {
         ec_cfg.m_parity = static_cast<uint16_t>(2);
         ec_cfg.fallback_timeout_ms = 0;
         ec_cfg.data_bytes = message_size;
+        ec_cfg.max_retries = 3;
         ECSender ec_sender(ec_cfg);
         rc = ec_sender.encode_and_send(conn, send_buffer.data(), message_size);
         if (rc == 0) {

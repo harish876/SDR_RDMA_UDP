@@ -165,6 +165,7 @@ int ECReceiver::post_receive(SDRConnection* conn, void* buffer, size_t length) {
         std::cerr << "[EC] Receiver buffer too small for data+parity\n";
         return -1;
     }
+    decode_attempts_ = 0;
 
     SDRRecvHandle* raw_handle = nullptr;
     int rc = sdr_recv_post(conn, buffer, length, &raw_handle);
@@ -232,9 +233,14 @@ bool ECReceiver::try_decode() {
                 msg.num_gaps++;
             }
             conn_->tcp_server->send_message(msg);
+            std::cout << "[EC][Receiver] EC_NACK gaps=" << static_cast<int>(msg.num_gaps) << std::endl;
         }
-        stats_.fallback_sr++;
-        return false;
+        decode_attempts_++;
+        if (decode_attempts_ >= cfg_.max_retries) {
+            stats_.fallback_sr++;
+            return false;
+        }
+        return false; // allow retries
     }
 
 #ifdef HAS_ISAL

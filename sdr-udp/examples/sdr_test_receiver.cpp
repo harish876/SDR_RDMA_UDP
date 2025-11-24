@@ -140,6 +140,7 @@ int main(int argc, char* argv[]) {
         ec_cfg.m_parity = static_cast<uint16_t>(config.get_uint32("ec_m_parity", 2));
         ec_cfg.fallback_timeout_ms = config.get_uint32("ec_fallback_timeout_ms", 0);
         ec_cfg.data_bytes = message_size;
+        ec_cfg.max_retries = config.get_uint32("ec_max_retries", 3);
         // compute total length with parity
         uint32_t capped_mtu = std::min<uint32_t>(params.mtu_bytes, SDRPacket::MAX_PAYLOAD_SIZE);
         uint32_t chunk_bytes = capped_mtu * params.packets_per_chunk;

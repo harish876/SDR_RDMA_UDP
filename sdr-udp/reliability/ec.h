@@ -13,6 +13,7 @@ struct ECConfig {
     uint16_t m_parity{0};
     uint32_t fallback_timeout_ms{0};
     uint64_t data_bytes{0}; // original data length (without parity)
+    uint32_t max_retries{3}; // max decode/retransmit attempts
 };
 
 struct ECStats {
@@ -60,6 +61,7 @@ private:
     uint32_t data_chunks_{0};
     uint32_t parity_chunks_{0};
     uint32_t stripes_{0};
+    uint32_t decode_attempts_{0};
 };
 
 } // namespace sdr::reliability
