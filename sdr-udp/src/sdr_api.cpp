@@ -356,14 +356,14 @@ int sdr_send_post(SDRConnection* conn, const void* buffer, size_t length, SDRSen
     }
     
     ControlMessage cts_msg;
-    if (!conn->tcp_client->receive_message(cts_msg)) {
-        std::cerr << "[SDR API] Failed to receive CTS" << std::endl;
-        return -1;
-    }
-    
-    if (cts_msg.msg_type != ControlMsgType::CTS) {
-        std::cerr << "[SDR API] Expected CTS, got other message type" << std::endl;
-        return -1;
+    // Loop until we get a CTS (skip any stale control messages)
+    while (true) {
+        if (!conn->tcp_client->receive_message(cts_msg)) {
+            std::cerr << "[SDR API] Failed to receive CTS" << std::endl;
+            return -1;
+        }
+        if (cts_msg.msg_type == ControlMsgType::CTS) break;
+        std::cerr << "[SDR API] Skipping unexpected control message type " << static_cast<int>(cts_msg.msg_type) << std::endl;
     }
     
     conn->connection_ctx->initialize(cts_msg.connection_id, cts_msg.params);
