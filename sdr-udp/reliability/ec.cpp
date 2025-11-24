@@ -18,16 +18,8 @@ namespace sdr::reliability {
 int ECSender::encode_and_send(SDRConnection* conn, const void* buffer, size_t length) {
     conn_ = conn;
     sends_.clear();
-    // Use existing connection params (set via CTS in sdr_api paths)
+    // Use existing connection params (set via CTS in sdr_api paths); fall back to defaults
     ConnectionParams params = conn->connection_ctx->get_params();
-    // If not initialized, try to receive CTS here
-    if ((params.mtu_bytes == 0 || params.packets_per_chunk == 0) && conn->tcp_client) {
-        ControlMessage cts_msg;
-        if (conn->tcp_client->receive_message(cts_msg) && cts_msg.msg_type == ControlMsgType::CTS) {
-            conn->connection_ctx->initialize(cts_msg.connection_id, cts_msg.params);
-            params = cts_msg.params;
-        }
-    }
     uint32_t mtu = params.mtu_bytes ? params.mtu_bytes : SDRPacket::MAX_PAYLOAD_SIZE;
     if (mtu > SDRPacket::MAX_PAYLOAD_SIZE) {
         mtu = SDRPacket::MAX_PAYLOAD_SIZE;
