@@ -348,6 +348,15 @@ int main(int argc, char* argv[]) {
                 std::cout << "\n[Receiver] Transfer completed!" << std::endl;
                 break;
             }
+        } else if (ec_receiver.has_value()) {
+            // Attempt EC decode when enough chunks received
+            if (ec_receiver->try_decode()) {
+                chunks_received = total_chunks;
+                display_progress();
+                std::cout << "\n[Receiver][EC] Decode successful, completing transfer" << std::endl;
+                sdr_recv_complete(active_handle);
+                break;
+            }
         } else {
             if (total_chunks > 0 && chunks_received >= total_chunks) {
                 display_progress();
