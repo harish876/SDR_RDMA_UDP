@@ -62,6 +62,9 @@ void SRSender::retransmit_range(uint32_t start_chunk, uint32_t count) {
     }
     uint32_t start_packet = static_cast<uint32_t>(offset / mtu_bytes_);
     uint32_t packet_count = static_cast<uint32_t>((length + mtu_bytes_ - 1) / mtu_bytes_);
+    std::cout << "[SR][Sender] Retransmitting chunk " << start_chunk
+              << " (" << packet_count << " packets: " << start_packet
+              << " .. " << (start_packet + (packet_count ? packet_count - 1 : 0)) << ")\n";
     send_packets_range(start_packet, packet_count);
     stats_.retransmits += count;
     auto now = std::chrono::steady_clock::now();
