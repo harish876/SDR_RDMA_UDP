@@ -36,6 +36,8 @@ private:
     std::vector<std::unique_ptr<SDRSendHandle, void(*)(SDRSendHandle*)>> sends_;
     std::vector<uint8_t> send_storage_; // holds data+parity buffer
     SDRConnection* conn_{nullptr};
+    std::vector<bool> chunk_acked_;
+    bool fallback_active_{false};
 };
 
 class ECReceiver {
