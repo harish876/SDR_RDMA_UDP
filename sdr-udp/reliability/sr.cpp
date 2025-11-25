@@ -276,13 +276,12 @@ bool SRReceiver::pump() {
     if (!ctx || !ctx->frontend_bitmap) return false;
     uint32_t total_chunks = ctx->total_chunks;
 
-    // Compute cumulative ack (highest contiguous chunk), allow -1 when none complete
-    int64_t cumulative_idx = -1;
-    while (static_cast<uint32_t>(cumulative_idx + 1) < total_chunks &&
-           ctx->frontend_bitmap->is_chunk_complete(static_cast<uint32_t>(cumulative_idx + 1))) {
-        cumulative_idx++;
+    // Compute cumulative ack (highest contiguous chunk)
+    uint32_t cumulative = 0;
+    while (cumulative < total_chunks && ctx->frontend_bitmap->is_chunk_complete(cumulative)) {
+        cumulative++;
     }
-    uint32_t cumulative = cumulative_idx >= 0 ? static_cast<uint32_t>(cumulative_idx) : 0;
+    if (cumulative > 0) cumulative -= 1; // last completed contiguous index
 
     // Build chunk bitmap snapshot (up to 8 words -> 512 chunks)
     uint64_t words[8] = {0,0,0,0,0,0,0,0};
@@ -296,12 +295,13 @@ bool SRReceiver::pump() {
         }
     }
 
-    // Find first gap anywhere (sender throttles)
+    // Find first gap after cumulative (no cap; sender will throttle retransmits)
     uint32_t missing_start = 0;
     uint32_t missing_len = 0;
-    for (uint32_t c = 0; c < total_chunks; ++c) {
+    for (uint32_t c = cumulative + 1; c < total_chunks; ++c) {
         if (!ctx->frontend_bitmap->is_chunk_complete(c)) {
             missing_start = c;
+            // count run of missing
             uint32_t run = 0;
             while (c < total_chunks && !ctx->frontend_bitmap->is_chunk_complete(c)) {
                 ++run; ++c;
@@ -320,10 +320,10 @@ bool SRReceiver::pump() {
     for (uint32_t i = 0; i < word_count; ++i) {
         msg.chunk_bitmap[i] = words[i];
     }
-    // Encode up to 4 gaps (from start of window)
+    // Encode up to 4 gaps
     msg.num_gaps = 0;
     uint16_t gaps_found = 0;
-    for (uint32_t c = 0; c < total_chunks && gaps_found < 4; ++c) {
+    for (uint32_t c = cumulative + 1; c < total_chunks && gaps_found < 4; ++c) {
         if (!ctx->frontend_bitmap->is_chunk_complete(c)) {
             uint16_t start = static_cast<uint16_t>(c);
             uint16_t len = 0;
