@@ -82,6 +82,13 @@ Run EC with loss (falls back to SR if decode fails):
 ```
 Note: do not enable netem for SDR mode; it intentionally lacks reliability.
 
+### Version 2 detailed notes (what changed, how, why)
+
+- Control-plane method: sender now issues OFFER, receiver replies CTS with negotiated params, sender confirms via ACCEPT before any UDP data. This follows the paper’s rendezvous (§3.1/§3.3) to ensure both sides agree on MTU, P, channels, and transfer_id, preventing mismatched buffers.
+- SR method: sender enforces a sliding window (`max_inflight_chunks`) per SDR §3.2. It seeds only the initial window, advances `ack_base` on cumulative ACK/NACK, and opens the window accordingly. Retransmits are throttled with a guard to avoid flooding; this provides backpressure and true selective repeat behavior.
+- EC method: data+parity encoding uses ISA-L (RS) per SDR §3.3/§4. Receiver decodes and sends EC_ACK/EC_NACK. After max retries, receiver emits EC_FALLBACK_SR with gap info; sender selectively retransmits missing data chunks (SR-style) until all data chunks are present. This matches the paper’s “decode first, fallback to selective repair” flow.
+- Backend/network simulation: multi-channel pipeline with packet/chunk bitmaps and optional netem drop/delay to mimic the stochastic model (§5.1) and DPA-parallel backend (§3.4) in software. Late-packet protection via generation IDs remains active (§3.3).
+
 ## Version 1
 
 ```bash
