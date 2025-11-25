@@ -106,6 +106,7 @@ int ECSender::poll() {
         inet_pton(AF_INET, params.udp_server_ip, &server_addr.sin_addr);
 
         const uint8_t* data = static_cast<const uint8_t*>(handle->user_buffer);
+        std::cout << "[EC][Sender] Retransmitting chunk " << chunk_id << " (" << ppc << " packets)\n";
         for (uint16_t pkt = 0; pkt < ppc; ++pkt) {
             uint32_t packet_offset = chunk_id * ppc + pkt;
             size_t data_offset = static_cast<size_t>(packet_offset) * mtu;
@@ -171,6 +172,9 @@ int ECSender::poll() {
                    msg.msg_type == ControlMsgType::EC_FALLBACK_SR ||
                    msg.msg_type == ControlMsgType::SR_NACK ||
                    msg.msg_type == ControlMsgType::SR_ACK) {
+            if (msg.msg_type == ControlMsgType::EC_FALLBACK_SR) {
+                std::cout << "[EC][Sender] Received EC_FALLBACK_SR, switching to SR-style retransmits\n";
+            }
             apply_bitmap(msg);
             for (uint16_t i = 0; i < msg.num_gaps; ++i) {
                 uint32_t start = msg.gap_start[i];
