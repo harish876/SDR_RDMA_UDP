@@ -255,6 +255,11 @@ inline void UDPReceiver::process_packet(const SDRPacketHeader& header,
     
     // Write packet to buffer
     write_packet_to_buffer(msg_ctx, header.packet_offset, payload, payload_len);
+
+    // Update backend packet bitmap so SDR (no reliability callbacks) progresses
+    if (msg_ctx->backend_bitmap) {
+        msg_ctx->backend_bitmap->set_packet_received(header.packet_offset);
+    }
 }
 
 inline void UDPReceiver::write_packet_to_buffer(MessageContext* msg_ctx, 
