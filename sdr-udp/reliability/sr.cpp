@@ -173,11 +173,13 @@ int SRSender::poll() {
             std::cout << "[SR][Sender] Received SR_ACK cum=" << cum_chunk
                       << " total=" << msg.params.total_chunks << std::endl;
             apply_bitmap(msg);
-            if (cum_chunk + 1 > ack_base_) {
+            if (cum_chunk != UINT32_MAX && cum_chunk + 1 > ack_base_) {
                 ack_base_ = cum_chunk + 1;
             }
-            for (uint32_t c = 0; c <= cum_chunk && c < total_chunks_; ++c) {
-                chunk_acked_[c] = true;
+            if (cum_chunk != UINT32_MAX) {
+                for (uint32_t c = 0; c <= cum_chunk && c < total_chunks_; ++c) {
+                    chunk_acked_[c] = true;
+                }
             }
             stats_.acks_sent++;
             retransmit_missing_from_bitmap(4); // send a few missing chunks per control tick
@@ -200,11 +202,13 @@ int SRSender::poll() {
             stats_.nacks_sent++;
             apply_bitmap(msg);
             uint32_t cum_chunk = msg.params.max_inflight;
-            if (cum_chunk + 1 > ack_base_) {
+            if (cum_chunk != UINT32_MAX && cum_chunk + 1 > ack_base_) {
                 ack_base_ = cum_chunk + 1;
             }
-            for (uint32_t c = 0; c <= cum_chunk && c < total_chunks_; ++c) {
-                chunk_acked_[c] = true;
+            if (cum_chunk != UINT32_MAX) {
+                for (uint32_t c = 0; c <= cum_chunk && c < total_chunks_; ++c) {
+                    chunk_acked_[c] = true;
+                }
             }
             // retransmit missing chunks based on bitmap state, throttled
             // walk reported gaps
@@ -279,12 +283,13 @@ bool SRReceiver::pump() {
     if (!ctx || !ctx->frontend_bitmap) return false;
     uint32_t total_chunks = ctx->total_chunks;
 
-    // Compute cumulative ack (highest contiguous chunk)
-    uint32_t cumulative = 0;
-    while (cumulative < total_chunks && ctx->frontend_bitmap->is_chunk_complete(cumulative)) {
-        cumulative++;
+    // Compute cumulative ack (highest contiguous chunk), allow none-complete case
+    int64_t cumulative_idx = -1;
+    while (static_cast<uint32_t>(cumulative_idx + 1) < total_chunks &&
+           ctx->frontend_bitmap->is_chunk_complete(static_cast<uint32_t>(cumulative_idx + 1))) {
+        cumulative_idx++;
     }
-    if (cumulative > 0) cumulative -= 1; // last completed contiguous index
+    uint32_t cumulative = (cumulative_idx >= 0) ? static_cast<uint32_t>(cumulative_idx) : UINT32_MAX;
 
     // Build chunk bitmap snapshot (up to 8 words -> 512 chunks)
     uint64_t words[8] = {0,0,0,0,0,0,0,0};
@@ -298,10 +303,10 @@ bool SRReceiver::pump() {
         }
     }
 
-    // Find first gap after cumulative (no cap; sender will throttle retransmits)
+    // Find first gap from start (no cap; sender will throttle retransmits)
     uint32_t missing_start = 0;
     uint32_t missing_len = 0;
-    for (uint32_t c = cumulative + 1; c < total_chunks; ++c) {
+    for (uint32_t c = 0; c < total_chunks; ++c) {
         if (!ctx->frontend_bitmap->is_chunk_complete(c)) {
             missing_start = c;
             // count run of missing
@@ -323,10 +328,10 @@ bool SRReceiver::pump() {
     for (uint32_t i = 0; i < word_count; ++i) {
         msg.chunk_bitmap[i] = words[i];
     }
-    // Encode up to 4 gaps
+    // Encode up to 4 gaps from start of window
     msg.num_gaps = 0;
     uint16_t gaps_found = 0;
-    for (uint32_t c = cumulative + 1; c < total_chunks && gaps_found < 4; ++c) {
+    for (uint32_t c = 0; c < total_chunks && gaps_found < 4; ++c) {
         if (!ctx->frontend_bitmap->is_chunk_complete(c)) {
             uint16_t start = static_cast<uint16_t>(c);
             uint16_t len = 0;
