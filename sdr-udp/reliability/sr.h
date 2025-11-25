@@ -42,6 +42,9 @@ private:
     uint32_t total_chunks_{0};
     uint32_t mtu_bytes_{0};
     uint16_t packets_per_chunk_{0};
+    uint32_t ack_base_{0};
+    uint32_t next_chunk_to_send_{0};
+    uint16_t max_inflight_{0};
     std::vector<bool> chunk_acked_;
     std::vector<std::chrono::steady_clock::time_point> last_tx_;
     std::chrono::steady_clock::time_point last_control_tx_{};
@@ -49,6 +52,8 @@ private:
     SDRConnection* conn_{nullptr};
 
     // Internal helpers would go here (timer management, retransmit queue, etc.).
+    void send_packets_range(uint32_t start_packet, uint32_t packet_count);
+    void retransmit_range(uint32_t start_chunk, uint32_t count);
 };
 
 // Receiver-side SR controller

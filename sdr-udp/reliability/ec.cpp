@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cstring>
 #include <algorithm>
+#include "reliability/sr.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -9,8 +10,10 @@
 #include <unistd.h>
 #include <errno.h>
 
-#ifdef HAS_ISAL
+#if defined(HAS_ISAL) && __has_include(<isa-l/erasure_code.h>)
 #include <isa-l/erasure_code.h>
+#else
+#undef HAS_ISAL
 #endif
 
 namespace sdr::reliability {
@@ -170,6 +173,24 @@ int ECSender::poll() {
                 }
             }
             retransmit_missing_bitmap(msg, 8);
+        } else if (msg.msg_type == ControlMsgType::EC_FALLBACK_SR) {
+            SRConfig sr_cfg{};
+            sr_cfg.rto_ms = cfg_.fallback_timeout_ms ? cfg_.fallback_timeout_ms : 500;
+            sr_cfg.nack_delay_ms = 200;
+            sr_cfg.max_inflight_chunks = 0;
+            SRSender sr_sender(sr_cfg);
+            size_t data_len = cfg_.data_bytes ? cfg_.data_bytes : send_storage_.size();
+            conn_->connection_ctx->set_auto_send_data(false);
+            if (sr_sender.start_send(conn_, send_storage_.data(), data_len) != 0) {
+                conn_->connection_ctx->set_auto_send_data(true);
+                return -1;
+            }
+            int rc = 0;
+            while ((rc = sr_sender.poll()) > 0) {
+                // keep polling
+            }
+            conn_->connection_ctx->set_auto_send_data(true);
+            return rc == 0 ? 0 : -1;
         } else if (msg.msg_type == ControlMsgType::COMPLETE_ACK) {
             return 0;
         }
@@ -198,6 +219,7 @@ int ECReceiver::post_receive(SDRConnection* conn, void* buffer, size_t length) {
         return -1;
     }
     decode_attempts_ = 0;
+    fallback_active_ = false;
 
     SDRRecvHandle* raw_handle = nullptr;
     int rc = sdr_recv_post(conn, buffer, length, &raw_handle);
@@ -230,6 +252,69 @@ bool ECReceiver::try_decode() {
             missing_data.push_back(c);
         }
     }
+    auto send_sr_control = [&](bool send_complete) {
+        if (!conn_ || !conn_->tcp_server) return;
+        ControlMessage msg{};
+        msg.magic = ControlMessage::MAGIC_VALUE;
+        msg.connection_id = conn_->connection_ctx->get_connection_id();
+        msg.params.total_chunks = static_cast<uint16_t>(data_chunks_);
+        // cumulative
+        uint32_t cumulative = 0;
+        while (cumulative < data_chunks_ && ctx->frontend_bitmap->is_chunk_complete(cumulative)) {
+            cumulative++;
+        }
+        if (cumulative > 0) cumulative -= 1;
+        msg.params.max_inflight = cumulative;
+        // bitmap
+        uint32_t word_count = (data_chunks_ + 63) / 64;
+        if (word_count > 16) word_count = 16;
+        msg.chunk_bitmap_words = static_cast<uint16_t>(word_count);
+        for (uint32_t c = 0; c < data_chunks_ && c < 1024; ++c) {
+            if (ctx->frontend_bitmap->is_chunk_complete(c)) {
+                uint32_t w = c / 64;
+                uint32_t b = c % 64;
+                msg.chunk_bitmap[w] |= (1ULL << b);
+            }
+        }
+        if (send_complete) {
+            msg.msg_type = ControlMsgType::COMPLETE_ACK;
+            conn_->tcp_server->send_message(msg);
+            return;
+        }
+        // gaps
+        uint16_t gaps_found = 0;
+        for (uint32_t c = cumulative + 1; c < data_chunks_ && gaps_found < 4; ++c) {
+            if (!ctx->frontend_bitmap->is_chunk_complete(c)) {
+                uint16_t start = static_cast<uint16_t>(c);
+                uint16_t run = 0;
+                while (c < data_chunks_ && !ctx->frontend_bitmap->is_chunk_complete(c) && run < UINT16_MAX) {
+                    ++run; ++c;
+                }
+                msg.gap_start[gaps_found] = start;
+                msg.gap_len[gaps_found] = run;
+                gaps_found++;
+            }
+        }
+        msg.num_gaps = gaps_found;
+        if (gaps_found > 0) {
+            msg.msg_type = ControlMsgType::SR_NACK;
+            msg.params.rto_ms = msg.gap_start[0];
+            msg.params.rtt_alpha_ms = msg.gap_len[0];
+        } else {
+            msg.msg_type = ControlMsgType::SR_ACK;
+        }
+        conn_->tcp_server->send_message(msg);
+    };
+
+    if (fallback_active_) {
+        // Drive SR control path during fallback
+        send_sr_control(missing_data.empty());
+        if (missing_data.empty()) {
+            stats_.decode_success++;
+            fallback_active_ = false;
+            return true;
+        }
+    }
     if (missing_data.empty()) {
         stats_.decode_success++;
         // Send EC_ACK
@@ -243,11 +328,10 @@ bool ECReceiver::try_decode() {
         return true;
     }
     if (missing_data.size() > m_) {
-        // Send EC_NACK with missing ranges to request SR fallback
+        // Send EC_NACK or trigger fallback SR
         if (conn_ && conn_->tcp_server) {
             ControlMessage msg{};
             msg.magic = ControlMessage::MAGIC_VALUE;
-            msg.msg_type = ControlMsgType::EC_NACK;
             msg.connection_id = conn_->connection_ctx->get_connection_id();
             msg.num_gaps = 0;
             // collapse missing_data into gaps
@@ -264,15 +348,19 @@ bool ECReceiver::try_decode() {
                 msg.gap_len[msg.num_gaps] = static_cast<uint16_t>(lenrun);
                 msg.num_gaps++;
             }
+            if (decode_attempts_ + 1 >= cfg_.max_retries) {
+                msg.msg_type = ControlMsgType::EC_FALLBACK_SR;
+                fallback_active_ = true;
+                stats_.fallback_sr++;
+            } else {
+                msg.msg_type = ControlMsgType::EC_NACK;
+            }
             conn_->tcp_server->send_message(msg);
-            std::cout << "[EC][Receiver] EC_NACK gaps=" << static_cast<int>(msg.num_gaps) << std::endl;
+            std::cout << "[EC][Receiver] " << (msg.msg_type == ControlMsgType::EC_FALLBACK_SR ? "EC_FALLBACK_SR" : "EC_NACK")
+                      << " gaps=" << static_cast<int>(msg.num_gaps) << std::endl;
         }
         decode_attempts_++;
-        if (decode_attempts_ >= cfg_.max_retries) {
-            stats_.fallback_sr++;
-            return false;
-        }
-        return false; // allow retries
+        return false; // allow retries or fallback
     }
 
 #ifdef HAS_ISAL

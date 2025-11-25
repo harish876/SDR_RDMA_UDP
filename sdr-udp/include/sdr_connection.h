@@ -71,6 +71,9 @@ public:
     const ConnectionParams& get_params() const { return params_; }
     
     bool is_initialized() const { return is_initialized_; }
+
+    void set_auto_send_data(bool enable) { auto_send_data_ = enable; }
+    bool auto_send_data() const { return auto_send_data_; }
     
     void calculate_bitmap_sizes(size_t total_bytes, uint32_t mtu_bytes,
                                uint16_t packets_per_chunk,
@@ -80,6 +83,7 @@ private:
     uint32_t connection_id_;
     ConnectionParams params_;
     bool is_initialized_;
+    bool auto_send_data_;
     
     // Message table: fixed-size array indexed by msg_id (0-1023)
     static constexpr size_t MAX_MESSAGES = 1024;
@@ -95,7 +99,7 @@ private:
 
 
 inline ConnectionContext::ConnectionContext()
-    : connection_id_(0), is_initialized_(false),
+    : connection_id_(0), is_initialized_(false), auto_send_data_(true),
       tcp_socket_fd_(-1), udp_socket_fd_(-1) {
     memset(&params_, 0, sizeof(params_));
     null_sink_.resize(1, 0);

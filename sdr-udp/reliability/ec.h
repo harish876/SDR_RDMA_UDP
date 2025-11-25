@@ -62,6 +62,7 @@ private:
     uint32_t parity_chunks_{0};
     uint32_t stripes_{0};
     uint32_t decode_attempts_{0};
+    bool fallback_active_{false};
 };
 
 } // namespace sdr::reliability

@@ -16,7 +16,8 @@ enum class ControlMsgType : uint8_t {
     SR_ACK = 6,         // Selective Repeat ACK (cumulative + bitmap window)
     SR_NACK = 7,        // Selective Repeat NACK (gap hint or timeout)
     EC_ACK = 8,         // Erasure coding ACK (decode success)
-    EC_NACK = 9         // Erasure coding NACK (fallback request)
+    EC_NACK = 9,        // Erasure coding NACK (decode failure / retry)
+    EC_FALLBACK_SR = 10 // Receiver requests SR fallback for EC
 };
 
 // Connection parameters structure (used in OFFER and CTS)
