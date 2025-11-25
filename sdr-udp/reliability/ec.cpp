@@ -21,6 +21,8 @@ namespace sdr::reliability {
 int ECSender::encode_and_send(SDRConnection* conn, const void* buffer, size_t length) {
     conn_ = conn;
     sends_.clear();
+    fallback_active_ = false;
+    chunk_acked_.clear();
     // Use existing connection params (set via CTS in sdr_api paths); fall back to defaults
     ConnectionParams params = conn->connection_ctx->get_params();
     uint32_t mtu = params.mtu_bytes ? params.mtu_bytes : SDRPacket::MAX_PAYLOAD_SIZE;
@@ -78,6 +80,7 @@ int ECSender::encode_and_send(SDRConnection* conn, const void* buffer, size_t le
         return rc;
     }
     sends_.emplace_back(raw_handle, [](SDRSendHandle* h){ delete h; });
+    chunk_acked_.assign(data_chunks, false);
     return 0;
 }
 
@@ -125,14 +128,14 @@ int ECSender::poll() {
 
     auto apply_bitmap = [&](const ControlMessage& msg) {
         uint32_t words = msg.chunk_bitmap_words;
-        uint32_t max_chunks = data_chunks + (msg.chunk_bitmap_words * 64 > data_chunks ? msg.chunk_bitmap_words * 64 - data_chunks : 0);
+        uint32_t max_chunks = data_chunks;
         for (uint32_t w = 0; w < words && w < 16; ++w) {
             uint64_t word = msg.chunk_bitmap[w];
             for (uint32_t bit = 0; bit < 64; ++bit) {
                 uint32_t chunk_id = w * 64 + bit;
-                if (chunk_id >= data_chunks) break;
+                if (chunk_id >= max_chunks) break;
                 if (word & (1ULL << bit)) {
-                    // mark acked by skipping retransmit
+                    chunk_acked_[chunk_id] = true;
                 }
             }
         }
@@ -164,33 +167,24 @@ int ECSender::poll() {
         }
         if (msg.msg_type == ControlMsgType::EC_ACK) {
             return 0;
-        } else if (msg.msg_type == ControlMsgType::EC_NACK) {
+        } else if (msg.msg_type == ControlMsgType::EC_NACK ||
+                   msg.msg_type == ControlMsgType::EC_FALLBACK_SR ||
+                   msg.msg_type == ControlMsgType::SR_NACK ||
+                   msg.msg_type == ControlMsgType::SR_ACK) {
+            apply_bitmap(msg);
             for (uint16_t i = 0; i < msg.num_gaps; ++i) {
                 uint32_t start = msg.gap_start[i];
                 uint32_t len = msg.gap_len[i];
                 for (uint32_t c = start; c < start + len && c < data_chunks; ++c) {
-                    retransmit_chunk(c);
+                    if (!chunk_acked_[c]) retransmit_chunk(c);
                 }
             }
             retransmit_missing_bitmap(msg, 8);
-        } else if (msg.msg_type == ControlMsgType::EC_FALLBACK_SR) {
-            SRConfig sr_cfg{};
-            sr_cfg.rto_ms = cfg_.fallback_timeout_ms ? cfg_.fallback_timeout_ms : 500;
-            sr_cfg.nack_delay_ms = 200;
-            sr_cfg.max_inflight_chunks = 0;
-            SRSender sr_sender(sr_cfg);
-            size_t data_len = cfg_.data_bytes ? cfg_.data_bytes : send_storage_.size();
-            conn_->connection_ctx->set_auto_send_data(false);
-            if (sr_sender.start_send(conn_, send_storage_.data(), data_len) != 0) {
-                conn_->connection_ctx->set_auto_send_data(true);
-                return -1;
+            bool all_done = true;
+            for (uint32_t c = 0; c < data_chunks; ++c) {
+                if (!chunk_acked_[c]) { all_done = false; break; }
             }
-            int rc = 0;
-            while ((rc = sr_sender.poll()) > 0) {
-                // keep polling
-            }
-            conn_->connection_ctx->set_auto_send_data(true);
-            return rc == 0 ? 0 : -1;
+            if (all_done) return 0;
         } else if (msg.msg_type == ControlMsgType::COMPLETE_ACK) {
             return 0;
         }
