@@ -3,6 +3,7 @@
 #include <iostream>
 #include <cstring>
 #include <algorithm>
+#include <atomic>
 #include <thread>
 #include <chrono>
 #include <sys/socket.h>
@@ -12,6 +13,16 @@
 #include <errno.h>
 
 namespace sdr {
+
+namespace {
+// Allocate a message ID from the 10-bit space (0-1023) with wraparound.
+uint32_t allocate_msg_id(SDRContext* ctx) {
+    std::lock_guard<std::mutex> lock(ctx->msg_id_mutex);
+    uint32_t id = ctx->next_msg_id % 1024;
+    ctx->next_msg_id = (ctx->next_msg_id + 1) % 1024;
+    return id;
+}
+} // namespace
 
 SDRContext* sdr_ctx_create(const char* device_name) {
     SDRContext* ctx = new SDRContext();
@@ -33,6 +44,7 @@ SDRConnection* sdr_listen(SDRContext* ctx, uint16_t tcp_port) {
     }
     
     auto* conn = new SDRConnection();
+    conn->parent_ctx = ctx;
     conn->is_receiver = true;
     conn->tcp_server = new TCPControlServer();
     
@@ -58,6 +70,7 @@ SDRConnection* sdr_connect(SDRContext* ctx, const char* server_ip, uint16_t tcp_
     }
     
     auto* conn = new SDRConnection();
+    conn->parent_ctx = ctx;
     conn->is_receiver = false;
     conn->tcp_client = new TCPControlClient();
     
@@ -125,59 +138,45 @@ int sdr_recv_post(SDRConnection* conn, void* buffer, size_t length, SDRRecvHandl
         return -1; // Only receiver can post receive
     }
     
-    // Allocate message ID (simple for now)
-    uint32_t msg_id = 0; // For now, use simple allocation
-    // TODO: Implement proper msg_id allocation
+    // Wait for OFFER from sender
+    ControlMessage offer{};
+    while (true) {
+        if (!conn->tcp_server->receive_message(offer)) {
+            std::cerr << "[SDR API] Failed to receive OFFER" << std::endl;
+            return -1;
+        }
+        if (offer.msg_type == ControlMsgType::OFFER) break;
+        std::cerr << "[SDR API] Skipping unexpected control message type " << static_cast<int>(offer.msg_type) << std::endl;
+    }
     
-    // Get connection parameters and set defaults if not initialized
+    // Allocate message ID
+    uint32_t msg_id = allocate_msg_id(conn->parent_ctx);
+    
+    // Get current connection parameters and negotiate with offer
     ConnectionParams params = conn->connection_ctx->get_params();
-    
-    std::cout << "[SDR API] Received params from context: mtu_bytes=" << params.mtu_bytes 
-              << ", packets_per_chunk=" << params.packets_per_chunk << std::endl;
-    
-    // Set total_bytes to the message length
-    params.total_bytes = length;
-    
-    // If params not initialized (all zeros), set reasonable defaults
-    // Must account for SDR packet header (16 bytes) when setting MTU
-    // MAX_PAYLOAD_SIZE = 1500 - 8 - 16 = 1476, so use a safe default
-    if (params.mtu_bytes == 0) {
-        std::cout << "[SDR API] mtu_bytes is 0, setting default to 128" << std::endl;
-        params.mtu_bytes = 128;  // Small MTU for testing: 128 bytes payload
-    }
-    
-    // Ensure mtu_bytes doesn't exceed maximum payload size
-    if (params.mtu_bytes > SDRPacket::MAX_PAYLOAD_SIZE) {
-        std::cerr << "[SDR API] Warning: mtu_bytes (" << params.mtu_bytes 
-                  << ") exceeds MAX_PAYLOAD_SIZE (" << SDRPacket::MAX_PAYLOAD_SIZE 
-                  << "), capping to " << SDRPacket::MAX_PAYLOAD_SIZE << std::endl;
-        params.mtu_bytes = SDRPacket::MAX_PAYLOAD_SIZE;
-    }
-    if (params.packets_per_chunk == 0) {
-        std::cout << "[SDR API] packets_per_chunk is 0, setting default to 64" << std::endl;
-        params.packets_per_chunk = 64;  // Default chunk size
-    } else {
-        std::cout << "[SDR API] Using configured packets_per_chunk=" << params.packets_per_chunk << std::endl;
-    }
-    // Note: UDP server port should ideally be configured before calling recv_post
-    // For now, if not set, we'll use a default
-    // TODO: Add API to set connection params (including UDP port) before recv_post
+    params.total_bytes = offer.params.total_bytes ? offer.params.total_bytes : length;
+    uint32_t proposed_mtu = offer.params.mtu_bytes ? offer.params.mtu_bytes : params.mtu_bytes;
+    if (proposed_mtu == 0) proposed_mtu = SDRPacket::MAX_PAYLOAD_SIZE;
+    params.mtu_bytes = std::min<uint32_t>(proposed_mtu, SDRPacket::MAX_PAYLOAD_SIZE);
+    params.packets_per_chunk = offer.params.packets_per_chunk ? offer.params.packets_per_chunk
+                                                              : (params.packets_per_chunk ? params.packets_per_chunk : 64);
+    params.num_channels = offer.params.num_channels ? offer.params.num_channels
+                                                    : (params.num_channels ? params.num_channels : 1);
     if (params.udp_server_port == 0) {
-        // Try to use default, but this should be set by the application
-        params.udp_server_port = 9999;
+        params.udp_server_port = params.channel_base_port ? params.channel_base_port : 9999;
     }
+    params.channel_base_port = params.channel_base_port ? params.channel_base_port : params.udp_server_port;
     if (params.udp_server_ip[0] == '\0') {
-        // Set default to localhost
         std::strncpy(params.udp_server_ip, "127.0.0.1", sizeof(params.udp_server_ip) - 1);
         params.udp_server_ip[sizeof(params.udp_server_ip) - 1] = '\0';
     }
     if (params.transfer_id == 0) {
-        params.transfer_id = 1;  // Default transfer ID
+        params.transfer_id = 1;
     }
     
     // Update connection context with initialized params
     conn->connection_ctx->initialize(conn->connection_ctx->get_connection_id(), params);
-    
+
     // Calculate bitmap sizes
     size_t total_packets, total_chunks;
     conn->connection_ctx->calculate_bitmap_sizes(length, params.mtu_bytes, 
@@ -191,14 +190,10 @@ int sdr_recv_post(SDRConnection* conn, void* buffer, size_t length, SDRRecvHandl
               << ", total_chunks=" << total_chunks << std::endl;
     
     // Allocate message slot
-    // Use transfer_id as generation - increment it to allow slot reuse
-    // For receiver, we'll use a simple counter that increments
-    static uint32_t receiver_generation_counter = 1;
-    uint32_t generation = params.transfer_id;
-    if (generation == 0 || generation == 1) {
-        // Use our own counter for receiver to ensure uniqueness
-        generation = receiver_generation_counter++;
-    }
+    // Use transfer_id as generation; if unset, generate monotonically
+    static std::atomic<uint32_t> receiver_generation_counter{1};
+    uint32_t generation = receiver_generation_counter.fetch_add(1, std::memory_order_relaxed);
+    params.transfer_id = generation;
     
     MessageContext* msg_ctx = conn->connection_ctx->allocate_message_slot(msg_id, generation);
     
@@ -228,6 +223,7 @@ int sdr_recv_post(SDRConnection* conn, void* buffer, size_t length, SDRRecvHandl
     // Create receive handle
     auto* recv_handle = new SDRRecvHandle();
     recv_handle->msg_id = msg_id;
+    recv_handle->generation = generation;
     recv_handle->msg_ctx = std::shared_ptr<MessageContext>(msg_ctx, [](MessageContext*) {}); // Non-owning
     recv_handle->user_buffer = buffer;
     recv_handle->buffer_size = length;
@@ -237,7 +233,7 @@ int sdr_recv_post(SDRConnection* conn, void* buffer, size_t length, SDRRecvHandl
     // Start UDP receiver if not already started
     if (!conn->udp_receiver) {
         conn->udp_receiver = std::make_shared<UDPReceiver>(conn->connection_ctx);
-        if (!conn->udp_receiver->start(params.udp_server_port)) {
+        if (!conn->udp_receiver->start(params.channel_base_port, params.num_channels)) {
             std::cerr << "[SDR API] Failed to start UDP receiver" << std::endl;
             return -1;
         }
@@ -258,6 +254,17 @@ int sdr_recv_post(SDRConnection* conn, void* buffer, size_t length, SDRRecvHandl
             std::cerr << "[SDR API] Failed to send CTS" << std::endl;
             return -1;
         }
+    }
+
+    // Wait for ACCEPT from sender
+    ControlMessage accept{};
+    while (true) {
+        if (!conn->tcp_server->receive_message(accept)) {
+            std::cerr << "[SDR API] Failed to receive ACCEPT" << std::endl;
+            return -1;
+        }
+        if (accept.msg_type == ControlMsgType::ACCEPT) break;
+        std::cerr << "[SDR API] Skipping unexpected control message type " << static_cast<int>(accept.msg_type) << std::endl;
     }
     
     return 0;
@@ -298,7 +305,12 @@ int sdr_recv_complete(SDRRecvHandle* handle) {
         is_complete = (total_chunks > 0 && chunks_received >= total_chunks);
     }
     
-    handle->msg_ctx->state = MessageState::COMPLETED;
+    // Mark message as completed and protect against late packets
+    if (handle->conn && handle->conn->connection_ctx) {
+        handle->conn->connection_ctx->complete_message(handle->msg_id);
+    } else {
+        handle->msg_ctx->state = MessageState::DEAD;
+    }
     
     // Send completion ACK or NACK to sender
     if (handle->conn && handle->conn->is_receiver && handle->conn->tcp_server) {
@@ -335,18 +347,42 @@ int sdr_send_post(SDRConnection* conn, const void* buffer, size_t length, SDRSen
         return -1;
     }
     
+    // Propose parameters via OFFER
+    ControlMessage offer{};
+    offer.magic = ControlMessage::MAGIC_VALUE;
+    offer.msg_type = ControlMsgType::OFFER;
+    offer.connection_id = conn->connection_ctx->get_connection_id();
+    ConnectionParams desired{};
+    desired.total_bytes = length;
+    desired.mtu_bytes = SDRPacket::MAX_PAYLOAD_SIZE;
+    desired.packets_per_chunk = 32;
+    desired.num_channels = 1;
+    desired.channel_base_port = 0;
+    desired.udp_server_port = 0;
+    std::memset(desired.udp_server_ip, 0, sizeof(desired.udp_server_ip));
+    offer.params = desired;
+    conn->tcp_client->send_message(offer);
+
     ControlMessage cts_msg;
-    if (!conn->tcp_client->receive_message(cts_msg)) {
-        std::cerr << "[SDR API] Failed to receive CTS" << std::endl;
-        return -1;
-    }
-    
-    if (cts_msg.msg_type != ControlMsgType::CTS) {
-        std::cerr << "[SDR API] Expected CTS, got other message type" << std::endl;
-        return -1;
+    // Loop until we get a CTS (skip any stale control messages)
+    while (true) {
+        if (!conn->tcp_client->receive_message(cts_msg)) {
+            std::cerr << "[SDR API] Failed to receive CTS" << std::endl;
+            return -1;
+        }
+        if (cts_msg.msg_type == ControlMsgType::CTS) break;
+        std::cerr << "[SDR API] Skipping unexpected control message type " << static_cast<int>(cts_msg.msg_type) << std::endl;
     }
     
     conn->connection_ctx->initialize(cts_msg.connection_id, cts_msg.params);
+
+    // Send ACCEPT back to receiver
+    ControlMessage accept{};
+    accept.magic = ControlMessage::MAGIC_VALUE;
+    accept.msg_type = ControlMsgType::ACCEPT;
+    accept.connection_id = cts_msg.connection_id;
+    accept.params = cts_msg.params;
+    conn->tcp_client->send_message(accept);
     
     if (cts_msg.params.mtu_bytes == 0) {
         std::cerr << "[SDR API] Error: MTU bytes is zero in CTS message" << std::endl;
@@ -357,10 +393,11 @@ int sdr_send_post(SDRConnection* conn, const void* buffer, size_t length, SDRSen
         return -1;
     }
     
-    uint32_t msg_id = 0; // TODO: Proper allocation
+    uint32_t msg_id = allocate_msg_id(conn->parent_ctx);
     
     auto* send_handle = new SDRSendHandle();
     send_handle->msg_id = msg_id;
+    send_handle->generation = cts_msg.params.transfer_id;
     send_handle->connection_ctx = conn->connection_ctx;
     send_handle->user_buffer = buffer;
     send_handle->buffer_size = length;
@@ -370,6 +407,11 @@ int sdr_send_post(SDRConnection* conn, const void* buffer, size_t length, SDRSen
     
     uint32_t mtu_bytes = cts_msg.params.mtu_bytes;
     size_t total_packets = (length + mtu_bytes - 1) / mtu_bytes;
+    size_t expected_total_packets = (cts_msg.params.total_bytes + mtu_bytes - 1) / mtu_bytes;
+    if (cts_msg.params.total_bytes != 0 && total_packets != expected_total_packets) {
+        std::cerr << "[SDR API] Warning: sender length (" << length << ") does not match receiver expectation ("
+                  << cts_msg.params.total_bytes << ")" << std::endl;
+    }
     
     std::cout << "[SDR API] Sending " << total_packets << " packets (MTU: " << mtu_bytes 
               << ", packets_per_chunk: " << cts_msg.params.packets_per_chunk << ")" << std::endl;
@@ -395,62 +437,73 @@ int sdr_send_post(SDRConnection* conn, const void* buffer, size_t length, SDRSen
         return -1;
     }
     
+    uint16_t num_channels = cts_msg.params.num_channels == 0 ? 1 : cts_msg.params.num_channels;
+    uint16_t base_port = cts_msg.params.channel_base_port == 0 ? cts_msg.params.udp_server_port
+                                                               : cts_msg.params.channel_base_port;
+    
     std::cout << "[SDR API] Sending to " << cts_msg.params.udp_server_ip 
-              << ":" << cts_msg.params.udp_server_port << std::endl;
+              << " base port " << base_port << " across " << num_channels << " channel(s)" << std::endl;
     
     size_t packets_failed = 0;
-    for (size_t i = 0; i < total_packets; ++i) {
-        uint32_t packet_offset = static_cast<uint32_t>(i);
-        size_t remaining = length - (i * mtu_bytes);
-        size_t packet_data_len = std::min(static_cast<size_t>(mtu_bytes), remaining);
-        
-        // Ensure packet_data_len doesn't exceed MAX_PAYLOAD_SIZE
-        if (packet_data_len > SDRPacket::MAX_PAYLOAD_SIZE) {
-            packet_data_len = SDRPacket::MAX_PAYLOAD_SIZE;
-        }
-        
-        SDRPacket* packet = SDRPacket::create_data_packet(
-            cts_msg.params.transfer_id, msg_id, packet_offset,
-            cts_msg.params.packets_per_chunk,
-            data + (i * mtu_bytes), packet_data_len);
-        
-        if (!packet) {
-            std::cerr << "[SDR API] Failed to create packet " << i 
-                      << " (data_len: " << packet_data_len << ", MAX: " 
-                      << SDRPacket::MAX_PAYLOAD_SIZE << ")" << std::endl;
-            packets_failed++;
-            continue;
-        }
-        
-        size_t total_packet_size = sizeof(SDRPacketHeader) + packet_data_len;
-        
-        packet->header.to_network_order();
-        
-        ssize_t sent = sendto(udp_socket, packet, total_packet_size, 0,
-                             (struct sockaddr*)&server_addr, sizeof(server_addr));
-        
-        if (sent > 0) {
-            send_handle->packets_sent++;
-        } else {
-            if (packets_failed < 5) {
-                std::cerr << "[SDR API] sendto failed for packet " << i 
-                          << ": " << strerror(errno) << " (packet_size: " 
-                          << total_packet_size << ")" << std::endl;
+    if (conn->connection_ctx->auto_send_data()) {
+        for (size_t i = 0; i < total_packets; ++i) {
+            uint32_t packet_offset = static_cast<uint32_t>(i);
+            size_t remaining = length - (i * mtu_bytes);
+            size_t packet_data_len = std::min(static_cast<size_t>(mtu_bytes), remaining);
+            
+            // Ensure packet_data_len doesn't exceed MAX_PAYLOAD_SIZE
+            if (packet_data_len > SDRPacket::MAX_PAYLOAD_SIZE) {
+                packet_data_len = SDRPacket::MAX_PAYLOAD_SIZE;
             }
-            packets_failed++;
+            
+            SDRPacket* packet = SDRPacket::create_data_packet(
+                cts_msg.params.transfer_id, msg_id, packet_offset,
+                cts_msg.params.packets_per_chunk,
+                data + (i * mtu_bytes), packet_data_len);
+            if (packet) {
+                packet->header.chunk_seq = packet->header.get_chunk_id();
+            }
+            
+            if (!packet) {
+                std::cerr << "[SDR API] Failed to create packet " << i 
+                          << " (data_len: " << packet_data_len << ", MAX: " 
+                          << SDRPacket::MAX_PAYLOAD_SIZE << ")" << std::endl;
+                packets_failed++;
+                continue;
+            }
+            
+            size_t total_packet_size = sizeof(SDRPacketHeader) + packet_data_len;
+            
+            packet->header.to_network_order();
+            
+            uint16_t channel_port = base_port + static_cast<uint16_t>(i % num_channels);
+            server_addr.sin_port = htons(channel_port);
+            ssize_t sent = sendto(udp_socket, packet, total_packet_size, 0,
+                                 (struct sockaddr*)&server_addr, sizeof(server_addr));
+            
+            if (sent > 0) {
+                send_handle->packets_sent++;
+            } else {
+                if (packets_failed < 5) {
+                    std::cerr << "[SDR API] sendto failed for packet " << i 
+                              << ": " << strerror(errno) << " (packet_size: " 
+                              << total_packet_size << ")" << std::endl;
+                }
+                packets_failed++;
+            }
+            
+            SDRPacket::destroy(packet);
         }
         
-        SDRPacket::destroy(packet);
-    }
-    
-    if (packets_failed > 0) {
-        std::cerr << "[SDR API] Error: " << packets_failed << " of " << total_packets 
-                  << " packets failed to send" << std::endl;
-        if (packets_failed == total_packets) {
-            std::cerr << "[SDR API] All packets failed! Check packet size limits." << std::endl;
+        if (packets_failed > 0) {
+            std::cerr << "[SDR API] Error: " << packets_failed << " of " << total_packets 
+                      << " packets failed to send" << std::endl;
+            if (packets_failed == total_packets) {
+                std::cerr << "[SDR API] All packets failed! Check packet size limits." << std::endl;
+            }
+        } else {
+            std::cout << "[SDR API] Successfully sent all " << total_packets << " packets" << std::endl;
         }
-    } else {
-        std::cout << "[SDR API] Successfully sent all " << total_packets << " packets" << std::endl;
     }
     
     close(udp_socket);
@@ -512,7 +565,8 @@ int sdr_send_stream_start(SDRConnection* conn, const void* buffer, size_t length
     conn->connection_ctx->initialize(cts_msg.connection_id, cts_msg.params);
     
     auto* stream_handle = new SDRStreamHandle();
-    stream_handle->msg_id = 0; // TODO: Proper allocation
+    stream_handle->msg_id = allocate_msg_id(conn->parent_ctx);
+    stream_handle->generation = cts_msg.params.transfer_id;
     stream_handle->connection_ctx = conn->connection_ctx;
     stream_handle->user_buffer = buffer;
     stream_handle->buffer_size = length;
@@ -545,7 +599,8 @@ int sdr_send_stream_continue(SDRStreamHandle* handle, uint32_t offset, size_t le
     struct sockaddr_in server_addr;
     std::memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(params.udp_server_port);
+    uint16_t num_channels = params.num_channels == 0 ? 1 : params.num_channels;
+    uint16_t base_port = params.channel_base_port == 0 ? params.udp_server_port : params.channel_base_port;
     
     if (inet_pton(AF_INET, params.udp_server_ip, &server_addr.sin_addr) <= 0) {
         close(udp_socket);
@@ -567,11 +622,14 @@ int sdr_send_stream_continue(SDRStreamHandle* handle, uint32_t offset, size_t le
         if (!packet) {
             continue;
         }
+        packet->header.chunk_seq = packet->header.get_chunk_id();
         
         size_t total_packet_size = sizeof(SDRPacketHeader) + packet_data_len;
         
         packet->header.to_network_order();
         
+        uint16_t channel_port = base_port + static_cast<uint16_t>(i % num_channels);
+        server_addr.sin_port = htons(channel_port);
         ssize_t sent = sendto(udp_socket, packet, total_packet_size, 0,
                              (struct sockaddr*)&server_addr, sizeof(server_addr));
         
@@ -597,4 +655,3 @@ int sdr_send_stream_end(SDRStreamHandle* handle) {
 }
 
 } // namespace sdr
-

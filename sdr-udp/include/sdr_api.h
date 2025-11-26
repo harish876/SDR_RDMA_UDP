@@ -32,11 +32,12 @@ struct SDRContext {
 struct SDRConnection {
     std::shared_ptr<ConnectionContext> connection_ctx;
     std::shared_ptr<UDPReceiver> udp_receiver;
+    SDRContext* parent_ctx;           // Back-reference to context (non-owning)
     TCPControlServer* tcp_server;    // Owned by receiver side
     TCPControlClient* tcp_client;    // Owned by sender side
     bool is_receiver;                // true if receiver, false if sender
     
-    SDRConnection() : tcp_server(nullptr), tcp_client(nullptr), is_receiver(false) {}
+    SDRConnection() : parent_ctx(nullptr), tcp_server(nullptr), tcp_client(nullptr), is_receiver(false) {}
     
     ~SDRConnection() {
         if (tcp_server) delete tcp_server;
@@ -47,6 +48,7 @@ struct SDRConnection {
 // Receive handle
 struct SDRRecvHandle {
     uint32_t msg_id;
+    uint32_t generation;
     std::shared_ptr<MessageContext> msg_ctx;
     void* user_buffer;
     size_t buffer_size;
@@ -56,6 +58,7 @@ struct SDRRecvHandle {
 // Send handle (one-shot)
 struct SDRSendHandle {
     uint32_t msg_id;
+    uint32_t generation;
     std::shared_ptr<ConnectionContext> connection_ctx;
     const void* user_buffer;
     size_t buffer_size;
@@ -66,6 +69,7 @@ struct SDRSendHandle {
 // Stream handle (streaming send)
 struct SDRStreamHandle {
     uint32_t msg_id;
+    uint32_t generation;
     std::shared_ptr<ConnectionContext> connection_ctx;
     const void* user_buffer;
     size_t buffer_size;
@@ -112,5 +116,3 @@ int sdr_send_stream_continue(SDRStreamHandle* handle, uint32_t offset, size_t le
 int sdr_send_stream_end(SDRStreamHandle* handle);
 
 } // namespace sdr
-
-

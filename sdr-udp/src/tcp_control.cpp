@@ -112,6 +112,12 @@ bool TCPControlServer::accept_connection() {
         std::cerr << "[TCP Server] Accept failed: " << strerror(errno) << std::endl;
         return false;
     }
+
+    // Set a short recv timeout so control loops can make progress under loss
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 200000; // 200 ms
+    setsockopt(client_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     
     char client_ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
@@ -135,6 +141,9 @@ bool TCPControlServer::receive_message(ControlMessage& msg) {
                         sizeof(ControlMessage) - total_received, 0);
         
         if (n <= 0) {
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                return false; // timeout, not fatal
+            }
             if (n == 0) {
                 std::cerr << "[TCP Server] Client disconnected" << std::endl;
             } else {
@@ -231,6 +240,11 @@ bool TCPControlClient::connect_to_server(const std::string& server_ip, uint16_t 
         socket_fd_ = -1;
         return false;
     }
+    // Set recv timeout for control-plane polling
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 200000; // 200 ms
+    setsockopt(socket_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     
     is_connected_ = true;
     std::cout << "[TCP Client] Connected successfully" << std::endl;
@@ -274,6 +288,9 @@ bool TCPControlClient::receive_message(ControlMessage& msg) {
                         sizeof(ControlMessage) - total_received, 0);
         
         if (n <= 0) {
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                return false; // timeout, not fatal
+            }
             if (n == 0) {
                 std::cerr << "[TCP Client] Server disconnected" << std::endl;
             } else {
@@ -298,4 +315,3 @@ void TCPControlClient::disconnect() {
 }
 
 } // namespace sdr
-

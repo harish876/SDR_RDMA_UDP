@@ -12,7 +12,12 @@ enum class ControlMsgType : uint8_t {
     ACCEPT = 2,         // Receiver accepts offer parameters
     REJECT = 3,         // Receiver rejects offer
     COMPLETE_ACK = 4,   // Receiver acknowledges transfer completion
-    INCOMPLETE_NACK = 5 // Receiver indicates transfer incomplete (timeout/packet loss)
+    INCOMPLETE_NACK = 5,// Receiver indicates transfer incomplete (timeout/packet loss)
+    SR_ACK = 6,         // Selective Repeat ACK (cumulative + bitmap window)
+    SR_NACK = 7,        // Selective Repeat NACK (gap hint or timeout)
+    EC_ACK = 8,         // Erasure coding ACK (decode success)
+    EC_NACK = 9,        // Erasure coding NACK (decode failure / retry)
+    EC_FALLBACK_SR = 10 // Receiver requests SR fallback for EC
 };
 
 // Connection parameters structure (used in OFFER and CTS)
@@ -29,6 +34,8 @@ struct ConnectionParams {
     uint32_t max_inflight;           // Maximum in-flight messages
     uint32_t rto_ms;                 // Retransmission timeout in milliseconds
     uint32_t rtt_alpha_ms;           // RTT alpha coefficient (for future SR use)
+    uint16_t num_channels;           // Number of UDP channels (Section 3.4)
+    uint16_t channel_base_port;      // Base port; channels use base + id
     
     // Network parameters
     char udp_server_ip[16];          // Receiver's UDP server IP
@@ -41,6 +48,11 @@ struct ControlMessage {
     ControlMsgType msg_type;
     uint32_t connection_id;          // Connection identifier
     ConnectionParams params;         // Connection parameters
+    uint16_t chunk_bitmap_words;     // Number of 64-bit words used in chunk_bitmap
+    uint64_t chunk_bitmap[16];       // Chunk bitmap snapshot (up to 1024 chunks)
+    uint16_t num_gaps;               // Number of gaps encoded
+    uint16_t gap_start[16];          // Gap starts (chunk ids)
+    uint16_t gap_len[16];            // Gap lengths
     
     // Serialization helpers
     size_t serialize(uint8_t* buffer, size_t buffer_size) const;
@@ -112,5 +124,3 @@ public:
 };
 
 } // namespace sdr
-
-

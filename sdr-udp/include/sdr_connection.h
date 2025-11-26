@@ -9,6 +9,7 @@
 #include <mutex>
 #include <atomic>
 #include <cstring>
+#include <vector>
 
 namespace sdr {
 
@@ -16,7 +17,8 @@ namespace sdr {
 enum class MessageState : uint8_t {
     ACTIVE = 0,      // Message is active and receiving packets
     COMPLETED = 1,   // Message has been completed
-    NULL_STATE = 2   // Message slot is null (for late packet protection)
+    DEAD = 2,        // Message is completed and protected with null sink
+    NULL_STATE = 3   // Message slot is null (unused)
 };
 
 // Message context (per message)
@@ -69,6 +71,9 @@ public:
     const ConnectionParams& get_params() const { return params_; }
     
     bool is_initialized() const { return is_initialized_; }
+
+    void set_auto_send_data(bool enable) { auto_send_data_ = enable; }
+    bool auto_send_data() const { return auto_send_data_; }
     
     void calculate_bitmap_sizes(size_t total_bytes, uint32_t mtu_bytes,
                                uint16_t packets_per_chunk,
@@ -78,11 +83,14 @@ private:
     uint32_t connection_id_;
     ConnectionParams params_;
     bool is_initialized_;
+    bool auto_send_data_;
     
     // Message table: fixed-size array indexed by msg_id (0-1023)
     static constexpr size_t MAX_MESSAGES = 1024;
     std::array<std::unique_ptr<MessageContext>, MAX_MESSAGES> msg_table_;
     mutable std::mutex msg_table_mutex_;  // Protects message table
+    std::vector<uint8_t> null_sink_;      // Single-byte null sink for late packets
+    std::array<uint32_t, MAX_MESSAGES> generation_counters_{}; // rotating generations per msg_id
     
     // Socket file descriptors
     int tcp_socket_fd_;
@@ -91,9 +99,11 @@ private:
 
 
 inline ConnectionContext::ConnectionContext()
-    : connection_id_(0), is_initialized_(false),
+    : connection_id_(0), is_initialized_(false), auto_send_data_(true),
       tcp_socket_fd_(-1), udp_socket_fd_(-1) {
     memset(&params_, 0, sizeof(params_));
+    null_sink_.resize(1, 0);
+    generation_counters_.fill(1); // start generations at 1
 }
 
 inline ConnectionContext::~ConnectionContext() {
@@ -121,21 +131,22 @@ inline MessageContext* ConnectionContext::allocate_message_slot(uint32_t msg_id,
     std::lock_guard<std::mutex> lock(msg_table_mutex_);
     
     auto& msg_ptr = msg_table_[msg_id];
-    // Allow reuse if slot is NULL or COMPLETED (with same or newer generation)
-    // Reject if slot is ACTIVE (transfer in progress)
+    // Allow reuse if slot is NULL or DEAD/COMPLETED with older generation.
+    // Reject if slot is ACTIVE (transfer in progress) or generation is not newer.
     if (msg_ptr && msg_ptr->state == MessageState::ACTIVE) {
         return nullptr;
     }
-    
-    // If slot exists but is COMPLETED and generation matches/old, or slot doesn't exist,
-    // we can reuse it
-    if (msg_ptr && msg_ptr->state == MessageState::COMPLETED && msg_ptr->generation >= generation) {
+
+    if (msg_ptr && (msg_ptr->state == MessageState::COMPLETED || msg_ptr->state == MessageState::DEAD)
+        && msg_ptr->generation >= generation) {
         return nullptr;
     }
     
     msg_ptr = std::make_unique<MessageContext>();
+    // Rotate generation to avoid late packet corruption
+    uint32_t rotated_gen = generation_counters_[msg_id]++;
     msg_ptr->msg_id = msg_id;
-    msg_ptr->generation = generation;
+    msg_ptr->generation = rotated_gen;
     msg_ptr->state = MessageState::ACTIVE;
     msg_ptr->connection_params = params_;
     
@@ -175,9 +186,8 @@ inline void ConnectionContext::complete_message(uint32_t msg_id) {
     auto& msg_ptr = msg_table_[msg_id];
     
     if (msg_ptr) {
-        msg_ptr->state = MessageState::COMPLETED;
-        // TODO - Note: In production, we'd set buffer to NULL memory key here
-        // For UDP, we just mark as completed
+        msg_ptr->state = MessageState::DEAD;
+        msg_ptr->buffer = null_sink_.data(); // Redirect to null sink to avoid late-packet corruption
     }
 }
 
@@ -198,5 +208,3 @@ inline void ConnectionContext::calculate_bitmap_sizes(size_t total_bytes, uint32
 }
 
 } // namespace sdr
-
-
