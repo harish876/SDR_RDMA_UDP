@@ -2,3 +2,6 @@
 	path = external/rdmapp
 	url = https://github.com/harish876/rdmapp
 	branch = master
+[submodule "external/simple-rdma"]
+	path = external/simple-rdma
+	url = https://github.com/drdavis65/simple-rdma.git
