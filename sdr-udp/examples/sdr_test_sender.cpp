@@ -93,6 +93,16 @@ int main(int argc, char* argv[]) {
                   << " (acks=" << sr_sender.stats().acks_sent
                   << ", nacks=" << sr_sender.stats().nacks_sent
                   << ", retrans=" << sr_sender.stats().retransmits << ")\n";
+        
+        double duration_ms = duration.count();
+        double duration_sec = duration_ms / 1000.0;
+        if (duration_sec > 0) {
+            long long bytes = message_size;
+            double mbits_per_sec = (bytes * 8.0) / duration_sec / 1'000'000.0;
+            double mb_per_sec = (bytes / (1024.0 * 1024.0)) / duration_sec;
+            std::cout << "[Sender][SR] Throughput: " << mb_per_sec << " MB/s (" 
+                      << mbits_per_sec << " Mbit/sec)" << std::endl;
+        }
         start_time = end_time; // so common footer uses same duration
     } else if (mode == Mode::EC) {
         ECConfig ec_cfg{};
@@ -112,6 +122,16 @@ int main(int argc, char* argv[]) {
         auto end_time = std::chrono::steady_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
         std::cout << "[Sender][EC] Done in " << duration.count() << " ms\n";
+        
+        double duration_ms = duration.count();
+        double duration_sec = duration_ms / 1000.0;
+        if (duration_sec > 0) {
+            long long bytes = message_size;
+            double mbits_per_sec = (bytes * 8.0) / duration_sec / 1'000'000.0;
+            double mb_per_sec = (bytes / (1024.0 * 1024.0)) / duration_sec;
+            std::cout << "[Sender][EC] Throughput: " << mb_per_sec << " MB/s (" 
+                      << mbits_per_sec << " Mbit/sec)" << std::endl;
+        }
         start_time = end_time;
     } else {
         SDRSendHandle* raw_handle = nullptr;
@@ -127,6 +147,16 @@ int main(int argc, char* argv[]) {
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
         std::cout << "[Sender] Sent " << send_handle->packets_sent << " packets in "
                   << duration.count() << " ms" << std::endl;
+        
+        double duration_ms = duration.count();
+        double duration_sec = duration_ms / 1000.0;
+        if (duration_sec > 0) {
+            long long bytes = message_size;
+            double mbits_per_sec = (bytes * 8.0) / duration_sec / 1'000'000.0;
+            double mb_per_sec = (bytes / (1024.0 * 1024.0)) / duration_sec;
+            std::cout << "[Sender] Throughput: " << mb_per_sec << " MB/s (" 
+                      << mbits_per_sec << " Mbit/sec)" << std::endl;
+        }
         start_time = end_time;
     }
     
