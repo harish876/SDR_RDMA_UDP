@@ -404,7 +404,8 @@ int sdr_send_post(SDRConnection* conn, const void* buffer, size_t length, SDRSen
     send_handle->packets_sent = 0;
     send_handle->conn = conn;  // Store connection reference for ACK
     *handle = send_handle;
-    
+    std::strncpy(cts_msg.params.udp_server_ip, "130.127.134.60", sizeof(cts_msg.params.udp_server_ip) - 1);
+    cts_msg.params.udp_server_ip[sizeof(cts_msg.params.udp_server_ip) - 1] = '\0'; 
     uint32_t mtu_bytes = cts_msg.params.mtu_bytes;
     size_t total_packets = (length + mtu_bytes - 1) / mtu_bytes;
     size_t expected_total_packets = (cts_msg.params.total_bytes + mtu_bytes - 1) / mtu_bytes;
