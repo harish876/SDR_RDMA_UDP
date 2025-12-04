@@ -54,7 +54,7 @@ def parse_duration(text: str, pattern: str):
     return int(m.group(1)) if m else None
 
 
-def run_pair(mode: str, tcp_port: int, udp_port: int, size: int, config: Path, server_ip: str, timeout: int = 120):
+def run_pair(mode: str, tcp_port: int, udp_port: int, size: int, config: Path, timeout: int = 120):
     recv_cmd = [
         str(BUILD / "sdr_test_receiver"),
         "--mode", mode,
@@ -66,7 +66,7 @@ def run_pair(mode: str, tcp_port: int, udp_port: int, size: int, config: Path, s
     send_cmd = [
         str(BUILD / "sdr_test_sender"),
         "--mode", mode,
-        server_ip,
+        "127.0.0.1",
         str(tcp_port),
         str(udp_port),
         str(size)
@@ -120,23 +120,14 @@ def main():
     parser.add_argument("--tcp", type=int, default=8888, help="TCP control port")
     parser.add_argument("--udp", type=int, default=9999, help="UDP data port")
     parser.add_argument("--iface", default="lo", help="Interface for netem")
-    parser.add_argument("--loss", type=float, nargs="+", default=[0, 5, 10], help="Loss percentages")
+    parser.add_argument("--loss", type=float, nargs="+", default=[0, 1, 5, 10], help="Loss percentages")
     parser.add_argument("--delay", type=int, default=50, help="Base delay ms for netem")
     parser.add_argument("--jitter", type=int, default=10, help="Jitter ms for netem")
-    parser.add_argument("--sizes", type=int, nargs="+", default=[
-        1048576,
-        10485760,
-        104857600,
-        524288000,
-        1073741824,
-        2147483648,
-        10737418240,
-    ], help="Message sizes (bytes)")
-    parser.add_argument("--iters", type=int, default=5, help="Iterations per condition")
+    parser.add_argument("--sizes", type=int, nargs="+", default=[1048576], help="Message sizes (bytes)")
+    parser.add_argument("--iters", type=int, default=3, help="Iterations per condition")
     parser.add_argument("--config", default=str((ROOT / "config" / "receiver.config")), help="Receiver config path")
     parser.add_argument("--output", default="results.csv", help="CSV output file")
     parser.add_argument("--no-netem", action="store_true", help="Do not apply tc; assume external setup")
-    parser.add_argument("--server-ip", default="127.0.0.1", help="Receiver IP for sender to target")
     args = parser.parse_args()
 
     results = []
@@ -153,7 +144,7 @@ def main():
                     apply_netem(args.iface, args.udp, args.delay if loss > 0 else 0, args.jitter if loss > 0 else 0, loss)
                 for it in range(args.iters):
                     print(f"[RUN] mode={mode} size={size} loss={loss}% iter={it+1}")
-                    res = run_pair(mode, args.tcp, args.udp, size, config_path, args.server_ip)
+                    res = run_pair(mode, args.tcp, args.udp, size, config_path)
                     res.update({
                         "loss_pct": loss,
                         "delay_ms": args.delay if loss > 0 else 0,
