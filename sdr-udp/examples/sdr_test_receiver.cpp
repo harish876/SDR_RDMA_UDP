@@ -379,7 +379,9 @@ int main(int argc, char* argv[]) {
     } else if (total_chunks > 0 && chunks_received >= total_chunks) {
         auto end_time = std::chrono::steady_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        std::cout << "[Receiver] Transfer completed in " << duration.count() << " ms" << std::endl;
+        double throughput_mbps = (message_size * 8.0) / (duration.count() / 1000.0) / 1e6;
+        std::cout << "[Receiver] Transfer completed in " << duration.count() << " ms"
+                  << " (throughput=" << throughput_mbps << " Mbps)" << std::endl;
     }
     
     if (transfer_incomplete) {
