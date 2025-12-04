@@ -158,7 +158,7 @@ int sdr_recv_post(SDRConnection* conn, void* buffer, size_t length, SDRRecvHandl
     uint32_t proposed_mtu = offer.params.mtu_bytes ? offer.params.mtu_bytes : params.mtu_bytes;
     if (proposed_mtu == 0) proposed_mtu = SDRPacket::MAX_PAYLOAD_SIZE;
     // Cloud paths can limit per-send to ~1024 bytes; clamp to 1000 to be safe.
-    params.mtu_bytes = std::min<uint32_t>(proposed_mtu, std::min<uint32_t>(SDRPacket::MAX_PAYLOAD_SIZE, 1000));
+    params.mtu_bytes = std::min<uint32_t>(proposed_mtu, SDRPacket::MAX_PAYLOAD_SIZE);
     params.packets_per_chunk = offer.params.packets_per_chunk ? offer.params.packets_per_chunk
                                                               : (params.packets_per_chunk ? params.packets_per_chunk : 64);
     params.num_channels = offer.params.num_channels ? offer.params.num_channels
@@ -356,8 +356,7 @@ int sdr_send_post(SDRConnection* conn, const void* buffer, size_t length, SDRSen
     offer.connection_id = conn->connection_ctx->get_connection_id();
     ConnectionParams desired{};
     desired.total_bytes = length;
-    // Limit MTU to 1000 bytes to stay below CloudLab per-send constraints.
-    desired.mtu_bytes = 1000;
+    desired.mtu_bytes = SDRPacket::MAX_PAYLOAD_SIZE;
     desired.packets_per_chunk = 32;
     desired.num_channels = 1;
     desired.channel_base_port = 0;
