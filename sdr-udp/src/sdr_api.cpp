@@ -155,12 +155,17 @@ int sdr_recv_post(SDRConnection* conn, void* buffer, size_t length, SDRRecvHandl
     // Get current connection parameters and negotiate with offer
     ConnectionParams params = conn->connection_ctx->get_params();
     params.total_bytes = offer.params.total_bytes ? offer.params.total_bytes : length;
-    uint32_t proposed_mtu = offer.params.mtu_bytes ? offer.params.mtu_bytes : params.mtu_bytes;
+//    uint32_t proposed_mtu = offer.params.mtu_bytes ? offer.params.mtu_bytes : params.mtu_bytes;
+    uint32_t proposed_mtu = params.mtu_bytes ? params.mtu_bytes : (offer.params.mtu_bytes ? offer.params.mtu_bytes : SDRPacket::MAX_PAYLOAD_SIZE);
+
     if (proposed_mtu == 0) proposed_mtu = SDRPacket::MAX_PAYLOAD_SIZE;
     params.mtu_bytes = std::min<uint32_t>(proposed_mtu, SDRPacket::MAX_PAYLOAD_SIZE);
-    params.packets_per_chunk = offer.params.packets_per_chunk ? offer.params.packets_per_chunk
-                                                              : (params.packets_per_chunk ? params.packets_per_chunk : 64);
-    params.num_channels = offer.params.num_channels ? offer.params.num_channels
+//    params.packets_per_chunk = offer.params.packets_per_chunk ? offer.params.packets_per_chunk
+//                                                              : (params.packets_per_chunk ? params.packets_per_chunk : 64);
+    params.packets_per_chunk = params.packets_per_chunk ? params.packets_per_chunk
+                                                        : (offer.params.packets_per_chunk ? offer.params.packets_per_chunk : 64);
+
+params.num_channels = offer.params.num_channels ? offer.params.num_channels
                                                     : (params.num_channels ? params.num_channels : 1);
     if (params.udp_server_port == 0) {
         params.udp_server_port = params.channel_base_port ? params.channel_base_port : 9999;
