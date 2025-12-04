@@ -89,10 +89,12 @@ int main(int argc, char* argv[]) {
         }
         auto end_time = std::chrono::steady_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        double throughput_mbps = (message_size * 8.0) / (duration.count() / 1000.0) / 1e6;
         std::cout << "[Sender][SR] Done in " << duration.count() << " ms"
                   << " (acks=" << sr_sender.stats().acks_sent
                   << ", nacks=" << sr_sender.stats().nacks_sent
-                  << ", retrans=" << sr_sender.stats().retransmits << ")\n";
+                  << ", retrans=" << sr_sender.stats().retransmits
+                  << ", throughput=" << throughput_mbps << " Mbps)\n";
         start_time = end_time; // so common footer uses same duration
     } else if (mode == Mode::EC) {
         ECConfig ec_cfg{};
@@ -111,7 +113,9 @@ int main(int argc, char* argv[]) {
         }
         auto end_time = std::chrono::steady_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        std::cout << "[Sender][EC] Done in " << duration.count() << " ms\n";
+        double throughput_mbps = (message_size * 8.0) / (duration.count() / 1000.0) / 1e6;
+        std::cout << "[Sender][EC] Done in " << duration.count() << " ms"
+                  << " (throughput=" << throughput_mbps << " Mbps)\n";
         start_time = end_time;
     } else {
         SDRSendHandle* raw_handle = nullptr;
@@ -125,8 +129,10 @@ int main(int argc, char* argv[]) {
         sdr_send_poll(send_handle.get());
         auto end_time = std::chrono::steady_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        double throughput_mbps = (message_size * 8.0) / (duration.count() / 1000.0) / 1e6;
         std::cout << "[Sender] Sent " << send_handle->packets_sent << " packets in "
-                  << duration.count() << " ms" << std::endl;
+                  << duration.count() << " ms"
+                  << " (throughput=" << throughput_mbps << " Mbps)" << std::endl;
         start_time = end_time;
     }
     
