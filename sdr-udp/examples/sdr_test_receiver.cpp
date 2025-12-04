@@ -97,7 +97,7 @@ int main(int argc, char* argv[]) {
     params.udp_server_port = static_cast<uint16_t>(udp_port);
     params.channel_base_port = static_cast<uint16_t>(config.get_uint32("channel_base_port", udp_port));
     params.num_channels = static_cast<uint16_t>(config.get_uint32("num_channels", 1));
-    std::strncpy(params.udp_server_ip, "127.0.0.1", sizeof(params.udp_server_ip) - 1);
+    std::strncpy(params.udp_server_ip, "130.127.134.60", sizeof(params.udp_server_ip) - 1);
     params.udp_server_ip[sizeof(params.udp_server_ip) - 1] = '\0';
     params.transfer_id = config.get_uint32("transfer_id", 1);
     
