@@ -167,8 +167,13 @@ int sdr_recv_post(SDRConnection* conn, void* buffer, size_t length, SDRRecvHandl
     }
     params.channel_base_port = params.channel_base_port ? params.channel_base_port : params.udp_server_port;
     if (params.udp_server_ip[0] == '\0') {
-        std::strncpy(params.udp_server_ip, "130.127.134.60", sizeof(params.udp_server_ip) - 1);
-        params.udp_server_ip[sizeof(params.udp_server_ip) - 1] = '\0';
+        if (offer.params.udp_server_ip[0] != '\0') {
+            std::strncpy(params.udp_server_ip, offer.params.udp_server_ip, sizeof(params.udp_server_ip) - 1);
+            params.udp_server_ip[sizeof(params.udp_server_ip) - 1] = '\0';
+        } else {
+            std::strncpy(params.udp_server_ip, "127.0.0.1", sizeof(params.udp_server_ip) - 1);
+            params.udp_server_ip[sizeof(params.udp_server_ip) - 1] = '\0';
+        }
     }
     if (params.transfer_id == 0) {
         params.transfer_id = 1;
@@ -347,19 +352,16 @@ int sdr_send_post(SDRConnection* conn, const void* buffer, size_t length, SDRSen
         return -1;
     }
     
-    // Propose parameters via OFFER
+    // Propose parameters via OFFER (prefer any caller-provided defaults in connection_ctx)
     ControlMessage offer{};
     offer.magic = ControlMessage::MAGIC_VALUE;
     offer.msg_type = ControlMsgType::OFFER;
     offer.connection_id = conn->connection_ctx->get_connection_id();
-    ConnectionParams desired{};
+    ConnectionParams desired = conn->connection_ctx->get_params();
     desired.total_bytes = length;
-    desired.mtu_bytes = SDRPacket::MAX_PAYLOAD_SIZE;
-    desired.packets_per_chunk = 32;
-    desired.num_channels = 1;
-    desired.channel_base_port = 0;
-    desired.udp_server_port = 0;
-    std::memset(desired.udp_server_ip, 0, sizeof(desired.udp_server_ip));
+    if (desired.mtu_bytes == 0) desired.mtu_bytes = SDRPacket::MAX_PAYLOAD_SIZE;
+    if (desired.packets_per_chunk == 0) desired.packets_per_chunk = 32;
+    if (desired.num_channels == 0) desired.num_channels = 1;
     offer.params = desired;
     conn->tcp_client->send_message(offer);
 
@@ -404,8 +406,11 @@ int sdr_send_post(SDRConnection* conn, const void* buffer, size_t length, SDRSen
     send_handle->packets_sent = 0;
     send_handle->conn = conn;  // Store connection reference for ACK
     *handle = send_handle;
-    std::strncpy(cts_msg.params.udp_server_ip, "130.127.134.60", sizeof(cts_msg.params.udp_server_ip) - 1);
-    cts_msg.params.udp_server_ip[sizeof(cts_msg.params.udp_server_ip) - 1] = '\0';
+    // If CTS did not include a UDP IP, fall back to loopback
+    if (cts_msg.params.udp_server_ip[0] == '\0') {
+        std::strncpy(cts_msg.params.udp_server_ip, "127.0.0.1", sizeof(cts_msg.params.udp_server_ip) - 1);
+        cts_msg.params.udp_server_ip[sizeof(cts_msg.params.udp_server_ip) - 1] = '\0';
+    }
     
     uint32_t mtu_bytes = cts_msg.params.mtu_bytes;
     size_t total_packets = (length + mtu_bytes - 1) / mtu_bytes;
