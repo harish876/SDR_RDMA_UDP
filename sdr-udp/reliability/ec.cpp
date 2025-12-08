@@ -336,6 +336,9 @@ bool ECReceiver::try_decode() {
         }
         // Also signal completion so sender unblocks on large transfers
         send_complete_ack();
+        if (recv_handle_) {
+            sdr_recv_complete(recv_handle_.get());
+        }
         return true;
     }
     if (missing_data.size() > m_) {
@@ -425,6 +428,9 @@ bool ECReceiver::try_decode() {
     }
     // Also signal completion to unblock sender
     send_complete_ack();
+    if (recv_handle_) {
+        sdr_recv_complete(recv_handle_.get());
+    }
     return true;
 #else
     stats_.fallback_sr++;
