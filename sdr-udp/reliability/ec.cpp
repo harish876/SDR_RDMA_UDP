@@ -161,12 +161,16 @@ int ECSender::poll() {
     while (true) {
         ControlMessage msg;
         if (!conn_->tcp_client->receive_message(msg)) {
-            // Timeout, check completion
+            // Timeout, keep waiting as long as the TCP connection is alive
             int rc = sdr_send_poll(handle);
             if (rc == 0) return 0;
+            if (!conn_->tcp_client->is_connected()) {
+                std::cerr << "[EC][Sender] Control connection closed while waiting for ACK\n";
+                return -1;
+            }
             continue;
         }
-        if (msg.msg_type == ControlMsgType::EC_ACK) {
+        if (msg.msg_type == ControlMsgType::EC_ACK || msg.msg_type == ControlMsgType::COMPLETE_ACK) {
             return 0;
         } else if (msg.msg_type == ControlMsgType::EC_NACK ||
                    msg.msg_type == ControlMsgType::EC_FALLBACK_SR ||
@@ -189,8 +193,6 @@ int ECSender::poll() {
                 if (!chunk_acked_[c]) { all_done = false; break; }
             }
             if (all_done) return 0;
-        } else if (msg.msg_type == ControlMsgType::COMPLETE_ACK) {
-            return 0;
         }
     }
 }
