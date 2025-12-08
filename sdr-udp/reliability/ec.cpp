@@ -243,6 +243,15 @@ bool ECReceiver::try_decode() {
     auto* ctx = recv_handle_->msg_ctx.get();
     if (!ctx || !ctx->frontend_bitmap) return false;
 
+    auto send_complete_ack = [&]() {
+        if (!conn_ || !conn_->tcp_server) return;
+        ControlMessage msg{};
+        msg.magic = ControlMessage::MAGIC_VALUE;
+        msg.msg_type = ControlMsgType::COMPLETE_ACK;
+        msg.connection_id = conn_->connection_ctx->get_connection_id();
+        conn_->tcp_server->send_message(msg);
+    };
+
     // Count missing data chunks
     std::vector<uint32_t> missing_data;
     for (uint32_t c = 0; c < data_chunks_; ++c) {
@@ -323,6 +332,8 @@ bool ECReceiver::try_decode() {
             msg.connection_id = conn_->connection_ctx->get_connection_id();
             conn_->tcp_server->send_message(msg);
         }
+        // Also signal completion so sender unblocks on large transfers
+        send_complete_ack();
         return true;
     }
     if (missing_data.size() > m_) {
@@ -410,6 +421,8 @@ bool ECReceiver::try_decode() {
         msg.connection_id = conn_->connection_ctx->get_connection_id();
         conn_->tcp_server->send_message(msg);
     }
+    // Also signal completion to unblock sender
+    send_complete_ack();
     return true;
 #else
     stats_.fallback_sr++;
