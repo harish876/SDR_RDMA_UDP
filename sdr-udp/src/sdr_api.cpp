@@ -142,8 +142,13 @@ int sdr_recv_post(SDRConnection* conn, void* buffer, size_t length, SDRRecvHandl
     ControlMessage offer{};
     while (true) {
         if (!conn->tcp_server->receive_message(offer)) {
-            std::cerr << "[SDR API] Failed to receive OFFER" << std::endl;
-            return -1;
+            // Check if connection is still valid (timeout vs connection closed)
+            if (conn->tcp_server->get_client_fd() < 0) {
+                std::cerr << "[SDR API] Failed to receive OFFER: connection closed" << std::endl;
+                return -1;
+            }
+            // Connection still valid, this is a timeout - retry
+            continue;
         }
         if (offer.msg_type == ControlMsgType::OFFER) break;
         std::cerr << "[SDR API] Skipping unexpected control message type " << static_cast<int>(offer.msg_type) << std::endl;
@@ -265,8 +270,13 @@ params.num_channels = offer.params.num_channels ? offer.params.num_channels
     ControlMessage accept{};
     while (true) {
         if (!conn->tcp_server->receive_message(accept)) {
-            std::cerr << "[SDR API] Failed to receive ACCEPT" << std::endl;
-            return -1;
+            // Check if connection is still valid (timeout vs connection closed)
+            if (conn->tcp_server->get_client_fd() < 0) {
+                std::cerr << "[SDR API] Failed to receive ACCEPT: connection closed" << std::endl;
+                return -1;
+            }
+            // Connection still valid, this is a timeout - retry
+            continue;
         }
         if (accept.msg_type == ControlMsgType::ACCEPT) break;
         std::cerr << "[SDR API] Skipping unexpected control message type " << static_cast<int>(accept.msg_type) << std::endl;
@@ -366,14 +376,22 @@ int sdr_send_post(SDRConnection* conn, const void* buffer, size_t length, SDRSen
     desired.udp_server_port = 0;
     std::memset(desired.udp_server_ip, 0, sizeof(desired.udp_server_ip));
     offer.params = desired;
-    conn->tcp_client->send_message(offer);
+    if (!conn->tcp_client->send_message(offer)) {
+        std::cerr << "[SDR API] Failed to send OFFER" << std::endl;
+        return -1;
+    }
 
     ControlMessage cts_msg;
     // Loop until we get a CTS (skip any stale control messages)
     while (true) {
         if (!conn->tcp_client->receive_message(cts_msg)) {
-            std::cerr << "[SDR API] Failed to receive CTS" << std::endl;
-            return -1;
+            // Check if connection is still valid (timeout vs connection closed)
+            if (!conn->tcp_client->is_connected()) {
+                std::cerr << "[SDR API] Failed to receive CTS: connection closed" << std::endl;
+                return -1;
+            }
+            // Connection still valid, this is a timeout - retry
+            continue;
         }
         if (cts_msg.msg_type == ControlMsgType::CTS) break;
         std::cerr << "[SDR API] Skipping unexpected control message type " << static_cast<int>(cts_msg.msg_type) << std::endl;
@@ -524,21 +542,28 @@ int sdr_send_poll(SDRSendHandle* handle) {
         ControlMessage ack_msg;
         std::cout << "[SDR API] Waiting for completion ACK from receiver..." << std::endl;
         
-        if (!handle->conn->tcp_client->receive_message(ack_msg)) {
-            std::cerr << "[SDR API] Failed to receive completion ACK" << std::endl;
-            return -1;
-        }
-        
-        if (ack_msg.msg_type == ControlMsgType::COMPLETE_ACK) {
-            std::cout << "[SDR API] Received completion ACK from receiver - transfer successful!" << std::endl;
-            return 0;
-        } else if (ack_msg.msg_type == ControlMsgType::INCOMPLETE_NACK) {
-            std::cerr << "[SDR API] Received incomplete NACK - receiver did not complete transfer (packet loss or timeout)" << std::endl;
-            return -1;
-        } else {
-            std::cerr << "[SDR API] Expected COMPLETE_ACK or INCOMPLETE_NACK, got message type: " 
-                      << static_cast<int>(ack_msg.msg_type) << std::endl;
-            return -1;
+        while (true) {
+            if (!handle->conn->tcp_client->receive_message(ack_msg)) {
+                // Check if connection is still valid (timeout vs connection closed)
+                if (!handle->conn->tcp_client->is_connected()) {
+                    std::cerr << "[SDR API] Failed to receive completion ACK: connection closed" << std::endl;
+                    return -1;
+                }
+                // Connection still valid, this is a timeout - retry
+                continue;
+            }
+            
+            if (ack_msg.msg_type == ControlMsgType::COMPLETE_ACK) {
+                std::cout << "[SDR API] Received completion ACK from receiver - transfer successful!" << std::endl;
+                return 0;
+            } else if (ack_msg.msg_type == ControlMsgType::INCOMPLETE_NACK) {
+                std::cerr << "[SDR API] Received incomplete NACK - receiver did not complete transfer (packet loss or timeout)" << std::endl;
+                return -1;
+            } else {
+                std::cerr << "[SDR API] Expected COMPLETE_ACK or INCOMPLETE_NACK, got message type: " 
+                          << static_cast<int>(ack_msg.msg_type) << ", retrying..." << std::endl;
+                continue;
+            }
         }
     }
     
