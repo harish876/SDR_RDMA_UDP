@@ -108,8 +108,9 @@ struct SDRPacket {
     SDRPacketHeader header;
     uint8_t payload[];  // Flexible array member (payload follows header)
     
-    // Maximum payload size (cap for configured MTU); raised to allow 4KB UDP payloads.
-    static constexpr size_t MAX_PAYLOAD_SIZE = 4096 - 8 - sizeof(SDRPacketHeader);
+    // Maximum payload size; set to a generous UDP payload cap so the MTU from
+    // sender/receiver config (negotiated in sdr_api) is the effective limiter.
+    static constexpr size_t MAX_PAYLOAD_SIZE = (64 * 1024) - 8 - sizeof(SDRPacketHeader);
     
     // Get total packet size
     size_t get_total_size() const {
