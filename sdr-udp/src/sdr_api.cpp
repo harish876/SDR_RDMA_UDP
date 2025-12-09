@@ -320,10 +320,15 @@ int sdr_recv_complete(SDRRecvHandle* handle) {
 
     // Check if transfer is actually complete before sending ACK
     bool is_complete = false;
-    if (handle->msg_ctx->frontend_bitmap) {
-        uint32_t chunks_received = handle->msg_ctx->frontend_bitmap->get_total_chunks_completed();
-        uint32_t total_chunks = handle->msg_ctx->total_chunks;
-        is_complete = (total_chunks > 0 && chunks_received >= total_chunks);
+    if (handle->msg_ctx) {
+        // EC may declare completion explicitly
+        if (handle->msg_ctx->state == MessageState::COMPLETED) {
+            is_complete = true;
+        } else if (handle->msg_ctx->frontend_bitmap) {
+            uint32_t chunks_received = handle->msg_ctx->frontend_bitmap->get_total_chunks_completed();
+            uint32_t total_chunks = handle->msg_ctx->total_chunks;
+            is_complete = (total_chunks > 0 && chunks_received >= total_chunks);
+        }
     }
 
     // Mark message as completed and protect against late packets
