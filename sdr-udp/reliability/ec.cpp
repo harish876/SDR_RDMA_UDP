@@ -161,12 +161,16 @@ int ECSender::poll() {
     while (true) {
         ControlMessage msg;
         if (!conn_->tcp_client->receive_message(msg)) {
-            // Timeout, check completion
+            // Timeout, keep waiting as long as the TCP connection is alive
             int rc = sdr_send_poll(handle);
             if (rc == 0) return 0;
+            if (!conn_->tcp_client->is_connected()) {
+                std::cerr << "[EC][Sender] Control connection closed while waiting for ACK\n";
+                return -1;
+            }
             continue;
         }
-        if (msg.msg_type == ControlMsgType::EC_ACK) {
+        if (msg.msg_type == ControlMsgType::EC_ACK || msg.msg_type == ControlMsgType::COMPLETE_ACK) {
             return 0;
         } else if (msg.msg_type == ControlMsgType::EC_NACK ||
                    msg.msg_type == ControlMsgType::EC_FALLBACK_SR ||
@@ -189,8 +193,6 @@ int ECSender::poll() {
                 if (!chunk_acked_[c]) { all_done = false; break; }
             }
             if (all_done) return 0;
-        } else if (msg.msg_type == ControlMsgType::COMPLETE_ACK) {
-            return 0;
         }
     }
 }
@@ -234,7 +236,8 @@ int ECReceiver::post_receive(SDRConnection* conn, void* buffer, size_t length) {
 }
 
 bool ECReceiver::try_decode() {
-    if (!recv_handle_) return false;
+    if (!recv_handle_ || !conn_) return false;
+    // Ensure bitmap is up to date
     const uint8_t* bitmap = nullptr;
     size_t len = 0;
     if (sdr_recv_bitmap_get(recv_handle_.get(), &bitmap, &len) != 0) {
@@ -250,72 +253,32 @@ bool ECReceiver::try_decode() {
             missing_data.push_back(c);
         }
     }
-    auto send_sr_control = [&](bool send_complete) {
-        if (!conn_ || !conn_->tcp_server) return;
-        ControlMessage msg{};
-        msg.magic = ControlMessage::MAGIC_VALUE;
-        msg.connection_id = conn_->connection_ctx->get_connection_id();
-        msg.params.total_chunks = static_cast<uint16_t>(data_chunks_);
-        // cumulative
-        uint32_t cumulative = 0;
-        while (cumulative < data_chunks_ && ctx->frontend_bitmap->is_chunk_complete(cumulative)) {
-            cumulative++;
-        }
-        if (cumulative > 0) cumulative -= 1;
-        msg.params.max_inflight = cumulative;
-        // bitmap
-        uint32_t word_count = (data_chunks_ + 63) / 64;
-        if (word_count > 16) word_count = 16;
-        msg.chunk_bitmap_words = static_cast<uint16_t>(word_count);
-        for (uint32_t c = 0; c < data_chunks_ && c < 1024; ++c) {
-            if (ctx->frontend_bitmap->is_chunk_complete(c)) {
-                uint32_t w = c / 64;
-                uint32_t b = c % 64;
-                msg.chunk_bitmap[w] |= (1ULL << b);
-            }
-        }
-        if (send_complete) {
-            msg.msg_type = ControlMsgType::COMPLETE_ACK;
-            conn_->tcp_server->send_message(msg);
-            return;
-        }
-        // gaps
-        uint16_t gaps_found = 0;
-        for (uint32_t c = cumulative + 1; c < data_chunks_ && gaps_found < 4; ++c) {
-            if (!ctx->frontend_bitmap->is_chunk_complete(c)) {
-                uint16_t start = static_cast<uint16_t>(c);
-                uint16_t run = 0;
-                while (c < data_chunks_ && !ctx->frontend_bitmap->is_chunk_complete(c) && run < UINT16_MAX) {
-                    ++run; ++c;
-                }
-                msg.gap_start[gaps_found] = start;
-                msg.gap_len[gaps_found] = run;
-                gaps_found++;
-            }
-        }
-        msg.num_gaps = gaps_found;
-        if (gaps_found > 0) {
-            msg.msg_type = ControlMsgType::SR_NACK;
-            msg.params.rto_ms = msg.gap_start[0];
-            msg.params.rtt_alpha_ms = msg.gap_len[0];
-        } else {
-            msg.msg_type = ControlMsgType::SR_ACK;
-        }
-        conn_->tcp_server->send_message(msg);
-    };
 
+    // Fallback SR control path (best-effort) if already active
     if (fallback_active_) {
-        // Drive SR control path during fallback
-        send_sr_control(missing_data.empty());
         if (missing_data.empty()) {
             stats_.decode_success++;
+            ctx->total_chunks = data_chunks_;
+            ctx->state = MessageState::COMPLETED;
+            if (conn_ && conn_->tcp_server) {
+                ControlMessage msg{};
+                msg.magic = ControlMessage::MAGIC_VALUE;
+                msg.msg_type = ControlMsgType::EC_ACK;
+                msg.connection_id = conn_->connection_ctx->get_connection_id();
+                conn_->tcp_server->send_message(msg);
+            }
             fallback_active_ = false;
             return true;
         }
+        // otherwise keep waiting for retransmits driven by sender
+        return false;
     }
+
+    // All data present without decode
     if (missing_data.empty()) {
         stats_.decode_success++;
-        // Send EC_ACK
+        ctx->total_chunks = data_chunks_;
+        ctx->state = MessageState::COMPLETED;
         if (conn_ && conn_->tcp_server) {
             ControlMessage msg{};
             msg.magic = ControlMessage::MAGIC_VALUE;
@@ -325,8 +288,9 @@ bool ECReceiver::try_decode() {
         }
         return true;
     }
+
+    // Too many losses -> request retransmit or fallback to SR
     if (missing_data.size() > m_) {
-        // Send EC_NACK or trigger fallback SR
         if (conn_ && conn_->tcp_server) {
             ControlMessage msg{};
             msg.magic = ControlMessage::MAGIC_VALUE;
@@ -358,7 +322,7 @@ bool ECReceiver::try_decode() {
                       << " gaps=" << static_cast<int>(msg.num_gaps) << std::endl;
         }
         decode_attempts_++;
-        return false; // allow retries or fallback
+        return false;
     }
 
 #ifdef HAS_ISAL
@@ -403,6 +367,10 @@ bool ECReceiver::try_decode() {
         ec_encode_data(chunk_bytes_, k_, 1, gftbl.data(), src_ptrs.data(), &recover_ptrs[mi]);
     }
     stats_.decode_success++;
+    if (ctx) {
+        ctx->total_chunks = data_chunks_;
+        ctx->state = MessageState::COMPLETED;
+    }
     if (conn_ && conn_->tcp_server) {
         ControlMessage msg{};
         msg.magic = ControlMessage::MAGIC_VALUE;

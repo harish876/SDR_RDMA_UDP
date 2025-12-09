@@ -97,7 +97,8 @@ int main(int argc, char* argv[]) {
     params.udp_server_port = static_cast<uint16_t>(udp_port);
     params.channel_base_port = static_cast<uint16_t>(config.get_uint32("channel_base_port", udp_port));
     params.num_channels = static_cast<uint16_t>(config.get_uint32("num_channels", 1));
-    std::strncpy(params.udp_server_ip, "127.0.0.1", sizeof(params.udp_server_ip) - 1);
+    std::string ip_cfg = config.get_string("udp_server_ip", "127.0.0.1");
+    std::strncpy(params.udp_server_ip, ip_cfg.c_str(), sizeof(params.udp_server_ip) - 1);
     params.udp_server_ip[sizeof(params.udp_server_ip) - 1] = '\0';
     params.transfer_id = config.get_uint32("transfer_id", 1);
     
@@ -423,9 +424,9 @@ int main(int argc, char* argv[]) {
             if (active_handle->msg_ctx) {
                 active_handle->msg_ctx->state = MessageState::COMPLETED;
             }
-        } else {
-            sdr_recv_complete(active_handle);
         }
+        // Always signal completion on the control path so the sender can unblock.
+        sdr_recv_complete(active_handle);
     }
     
     std::this_thread::sleep_for(std::chrono::milliseconds(50));

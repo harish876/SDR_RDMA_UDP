@@ -108,8 +108,9 @@ struct SDRPacket {
     SDRPacketHeader header;
     uint8_t payload[];  // Flexible array member (payload follows header)
     
-    // Maximum payload size (assuming 1500 byte MTU - 8 byte UDP header - 16 byte SDR header)
-    static constexpr size_t MAX_PAYLOAD_SIZE = 1500 - 8 - sizeof(SDRPacketHeader);
+    // Maximum payload size; set to a generous UDP payload cap so the MTU from
+    // sender/receiver config (negotiated in sdr_api) is the effective limiter.
+    static constexpr size_t MAX_PAYLOAD_SIZE = (64 * 1024) - 8 - sizeof(SDRPacketHeader);
     
     // Get total packet size
     size_t get_total_size() const {
@@ -155,4 +156,3 @@ struct SDRPacket {
 // Note: Using system htons/htonl/ntohs/ntohl from <arpa/inet.h>
 
 } // namespace sdr
-

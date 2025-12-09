@@ -1,4 +1,5 @@
 #include "sdr_api.h"
+#include "config_parser.h"
 #include "reliability/sr.h"
 #include "reliability/ec.h"
 #include <iostream>
@@ -30,7 +31,7 @@ int main(int argc, char* argv[]) {
         argi = 3;
     }
     if (argc - argi < 3) {
-        std::cerr << "Usage: " << argv[0] << " [--mode sdr|sr|ec] <server_ip> <tcp_port> <udp_port> [message_size]" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " [--mode sdr|sr|ec] <server_ip> <tcp_port> <udp_port> [message_size] [config_file]" << std::endl;
         return 1;
     }
     
@@ -38,9 +39,15 @@ int main(int argc, char* argv[]) {
     uint16_t tcp_port = static_cast<uint16_t>(std::stoi(argv[argi + 1]));
     uint16_t udp_port = static_cast<uint16_t>(std::stoi(argv[argi + 2]));
     size_t message_size = 1024 * 1024; // 1 MiB default
-    
+    std::string config_file;
     if (argc - argi >= 4) {
         message_size = std::stoull(argv[argi + 3]);
+        if (argc - argi >= 5) {
+            config_file = argv[argi + 4];
+        }
+    } else if (argc - argi == 3) {
+        // optional config without overriding message_size
+        if (argc > argi + 3) config_file = argv[argi + 3];
     }
     
     std::cout << "[Sender] Starting SDR sender (mode="
@@ -49,6 +56,20 @@ int main(int argc, char* argv[]) {
     std::cout << "[Sender] UDP port: " << udp_port << std::endl;
     std::cout << "[Sender] Message size: " << message_size << " bytes" << std::endl;
     
+    ConfigParser cfg;
+    if (!config_file.empty()) {
+        if (cfg.load_from_file(config_file)) {
+            cfg.print_all();
+        } else {
+            std::cout << "[Sender] Warning: failed to load config file, using defaults" << std::endl;
+        }
+    }
+
+    // Allow message_size override from config when CLI size not provided
+    if ((argc - argi) < 4) {
+        message_size = cfg.get_uint32("message_size", static_cast<uint32_t>(message_size));
+    }
+
     SDRContext* ctx = sdr_ctx_create("sender");
     if (!ctx) {
         std::cerr << "[Sender] Failed to create SDR context" << std::endl;
@@ -69,6 +90,16 @@ int main(int argc, char* argv[]) {
         send_buffer[i] = static_cast<uint8_t>(i % 256);
     }
     
+    // Push preferred params into connection context before send so OFFER reflects them
+    ConnectionParams preferred{};
+    preferred.mtu_bytes = cfg.get_uint32("mtu_bytes", 0);
+    preferred.packets_per_chunk = static_cast<uint16_t>(cfg.get_uint32("packets_per_chunk", 0));
+    preferred.channel_base_port = static_cast<uint16_t>(udp_port);
+    preferred.udp_server_port = static_cast<uint16_t>(udp_port);
+    preferred.num_channels = static_cast<uint16_t>(cfg.get_uint32("num_channels", 1));
+    preferred.transfer_id = cfg.get_uint32("transfer_id", 1);
+    sdr_set_params(conn, &preferred);
+
     std::cout << "[Sender] Sending message..." << std::endl;
     auto start_time = std::chrono::steady_clock::now();
     
@@ -76,9 +107,9 @@ int main(int argc, char* argv[]) {
     int rc = 0;
     if (mode == Mode::SR) {
         SRConfig sr_cfg{};
-        sr_cfg.rto_ms = 500;          // default RTO for demo
-        sr_cfg.nack_delay_ms = 200;   // delay before requesting retransmit
-        sr_cfg.max_inflight_chunks = 0;
+        sr_cfg.rto_ms = cfg.get_uint32("sr_rto_ms", 500);
+        sr_cfg.nack_delay_ms = cfg.get_uint32("sr_nack_delay_ms", 200);
+        sr_cfg.max_inflight_chunks = static_cast<uint16_t>(cfg.get_uint32("window_size", 0));
         SRSender sr_sender(sr_cfg);
         rc = sr_sender.start_send(conn, send_buffer.data(), message_size);
         if (rc == 0) {
