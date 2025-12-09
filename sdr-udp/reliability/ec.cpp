@@ -325,16 +325,34 @@ bool ECReceiver::try_decode() {
         }
     }
     if (missing_data.empty()) {
-        // Mark ALL data chunks as complete after decode success
-        if (ctx && ctx->frontend_bitmap) {
-            for (uint32_t c = 0; c < data_chunks_; ++c) {
-                ctx->frontend_bitmap->mark_chunk_complete(c);
-            }
-        }
+        // After EC succeeds, treat only data_chunks_ as required.
+    // Parity chunks are optional and may be dropped, so remove them
+    // from completion criteria.
+    if (ctx) {
+        ctx->total_chunks = data_chunks_;  
+    }
 
-        // For completion logic, ignore parity chunks completely
-        ctx->total_chunks = data_chunks_;
-        
+    // ---- Existing ACK logic ----
+    stats_.decode_success++;
+
+    if (conn_ && conn_->tcp_server) {
+        ControlMessage msg{};
+        msg.magic = ControlMessage::MAGIC_VALUE;
+        msg.msg_type = ControlMsgType::EC_ACK;
+        msg.connection_id = conn_->connection_ctx->get_connection_id();
+        conn_->tcp_server->send_message(msg);
+    }
+
+    // Unblock sender via COMPLETE_ACK (control plane)
+    send_complete_ack();
+
+    // Notify SDR API to terminate receive and send COMPLETE_ACK/NACK
+    if (recv_handle_) {
+        sdr_recv_complete(recv_handle_.get());
+    }
+
+    return true;
+
     }
     if (missing_data.size() > m_) {
         // Send EC_NACK or trigger fallback SR
