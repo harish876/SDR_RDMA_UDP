@@ -424,9 +424,9 @@ int main(int argc, char* argv[]) {
             if (active_handle->msg_ctx) {
                 active_handle->msg_ctx->state = MessageState::COMPLETED;
             }
-        } else {
-            sdr_recv_complete(active_handle);
         }
+        // Always signal completion on the control path so the sender can unblock.
+        sdr_recv_complete(active_handle);
     }
     
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
