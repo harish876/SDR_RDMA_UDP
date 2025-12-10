@@ -414,7 +414,6 @@ SDR_RDMA_UDP/
 
 The RDMA implementation includes several examples in `external/rdmapp/examples/`:
 
-- **`rdma_reed_solomon.h/cpp`**: Complete RDMA FEC implementation with Reed-Solomon encoding
   - `RDMASender`: Sends data chunks with parity packets over RDMA
   - `RDMAReceiver`: Receives and decodes data using FEC
   - Chunked transmission aligned to MTU boundaries
